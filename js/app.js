@@ -17,7 +17,7 @@ const CONFIG = {
   ageMin: 1,
   ageMax: 17,
   defaultAdults: 2,
-  defaultBudget: 12500,
+  defaultBudget: 6000,
   days: ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье'],
   daysShort: ['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ', 'ВС'],
   daysUpper: ['ПОНЕДЕЛЬНИК', 'ВТОРНИК', 'СРЕДА', 'ЧЕТВЕРГ', 'ПЯТНИЦА', 'СУББОТА', 'ВОСКРЕСЕНЬЕ'],
@@ -27,6 +27,14 @@ const CONFIG = {
     dinner:    { name: 'Ужин',    lower: 'ужин',    emoji: '🍽️', familyTitle: 'Ужин для всей семьи',    selfTitle: 'Ужин для себя' }
   },
   mealOrder: ['breakfast', 'lunch', 'dinner'],
+  /* Ориентир на одного взрослого в день. БЖУ считаем по порциям, без масштабирования
+     на детей: дети едят те же блюда меньшими порциями. */
+  macroTargets: { kcal: 1500, p: 90, f: 52, c: 150 },
+  macroShares: {
+    breakfast: { kcal: 0.28, p: 0.27, f: 0.28, c: 0.28 },
+    lunch:     { kcal: 0.40, p: 0.42, f: 0.38, c: 0.42 },
+    dinner:    { kcal: 0.32, p: 0.31, f: 0.34, c: 0.30 }
+  },
   appliances: [
     { id: 'stove', name: 'Плита', emoji: '🔥' },
     { id: 'oven', name: 'Духовка', emoji: '🥧' },
@@ -147,25 +155,42 @@ function pluralPositions(n) { return pluralize(n, ['позиция', 'позиц
 function pluralDays(n) { return pluralize(n, ['день', 'дня', 'дней']); }
 
 /* ───────── STATE ───────── */
+function defaultMealSettings(familyDefault) {
+  const family = familyDefault === undefined ? CONFIG.defaultAdults > 1 : !!familyDefault;
+  const out = {};
+  CONFIG.mealOrder.forEach(function (slot) {
+    out[slot] = { self: !family, family: family };
+  });
+  return out;
+}
+function defaultDayMeals() {
+  return Array.from({ length: 7 }, function () { return defaultMealSettings(); });
+}
+function cloneDayMeals(days) {
+  return days.map(function (day) {
+    const out = {};
+    CONFIG.mealOrder.forEach(function (slot) {
+      const m = day && day[slot];
+      out[slot] = { self: !!(m && m.self), family: !!(m && m.family) };
+    });
+    return out;
+  });
+}
 function makeDefaultState() {
   return {
     step: 1,
-    regionId: 'moscow',
+    regionId: 'orsk',
     storeId: null,
     adults: CONFIG.defaultAdults,
     childrenAges: [],
-    meals: {
-      breakfast: { self: true, family: false },
-      lunch: { self: true, family: false },
-      dinner: { self: true, family: false }
-    },
+    dayMeals: defaultDayMeals(),
     budget: CONFIG.defaultBudget,
     allergies: ['none'],
     stop: [],
     appliances: CONFIG.defaultAppliances.slice(),
     plan: null,
     shoppingChecked: [],
-    ui: { screen: 'onboarding', dayId: 0, dishId: null, slot: null, mapBack: 'onboarding', profileBack: 'week', regionBack: 'onboarding' }
+    ui: { screen: 'onboarding', dayId: 0, mealDay: 0, dishId: null, slot: null, mapBack: 'onboarding', profileBack: 'week', regionBack: 'onboarding' }
   };
 }
 
@@ -173,19 +198,41 @@ function normalizeState(raw) {
   const d = makeDefaultState();
   if (!raw || typeof raw !== 'object') return d;
   d.step = clamp(parseInt(raw.step, 10) || 1, 1, 7);
-  d.regionId = REGIONS.some(function (r) { return r.id === raw.regionId; }) ? raw.regionId : 'moscow';
+  d.regionId = REGIONS.some(function (r) { return r.id === raw.regionId; }) ? raw.regionId : 'orsk';
   const regionStoreIds = (REGIONS.find(function (r) { return r.id === d.regionId; }) || REGIONS[0]).storeIds;
   d.storeId = regionStoreIds.indexOf(raw.storeId) !== -1 ? raw.storeId : null;
   d.adults = clamp(parseInt(raw.adults, 10) || CONFIG.defaultAdults, 1, CONFIG.adultsMax);
   d.childrenAges = Array.isArray(raw.childrenAges)
     ? raw.childrenAges.slice(0, CONFIG.kidsMax).map(function (a) { return clamp(parseInt(a, 10) || 7, CONFIG.ageMin, CONFIG.ageMax); })
     : [];
-  if (raw.meals && typeof raw.meals === 'object') {
+  /* Новый формат: свой набор приёмов пищи на каждый день.
+     Старый общий raw.meals переносим на все семь дней. */
+  if (Array.isArray(raw.dayMeals) && raw.dayMeals.length) {
+    const days = [];
+    for (let i = 0; i < 7; i++) {
+      const src = raw.dayMeals[i] || raw.dayMeals[raw.dayMeals.length - 1] || raw.meals || {};
+      const day = {};
+      CONFIG.mealOrder.forEach(function (slot) {
+        const m = src[slot];
+        day[slot] = m && typeof m === 'object'
+          ? { self: !!m.self, family: !!m.family }
+          : defaultMealSettings(d.adults > 1)[slot];
+      });
+      days.push(day);
+    }
+    d.dayMeals = days;
+  } else if (raw.meals && typeof raw.meals === 'object') {
+    const base = {};
     CONFIG.mealOrder.forEach(function (slot) {
       const m = raw.meals[slot];
-      if (m && typeof m === 'object') {
-        d.meals[slot] = { self: !!m.self, family: !!m.family };
-      }
+      base[slot] = m && typeof m === 'object'
+        ? { self: !!m.self, family: !!m.family }
+        : defaultMealSettings(d.adults > 1)[slot];
+    });
+    d.dayMeals = Array.from({ length: 7 }, function () {
+      const day = {};
+      CONFIG.mealOrder.forEach(function (slot) { day[slot] = Object.assign({}, base[slot]); });
+      return day;
     });
   }
   d.budget = clamp(Math.round((parseInt(raw.budget, 10) || CONFIG.defaultBudget) / CONFIG.budgetStep) * CONFIG.budgetStep, CONFIG.minBudget, CONFIG.maxBudget);
@@ -206,11 +253,12 @@ function normalizeState(raw) {
   if (raw.ui && typeof raw.ui === 'object') {
     d.ui.screen = CONFIG.screens.indexOf(raw.ui.screen) !== -1 ? raw.ui.screen : 'onboarding';
     d.ui.dayId = clamp(parseInt(raw.ui.dayId, 10) || 0, 0, 6);
+    d.ui.mealDay = clamp(parseInt(raw.ui.mealDay, 10) || 0, 0, 6);
     d.ui.dishId = typeof raw.ui.dishId === 'string' ? raw.ui.dishId : null;
     d.ui.slot = CONFIG.mealOrder.indexOf(raw.ui.slot) !== -1 ? raw.ui.slot : null;
-    d.ui.mapBack = ['onboarding', 'week', 'profile'].indexOf(raw.ui.mapBack) !== -1 ? raw.ui.mapBack : 'onboarding';
+    d.ui.mapBack = ['onboarding', 'week', 'profile', 'shopping'].indexOf(raw.ui.mapBack) !== -1 ? raw.ui.mapBack : 'onboarding';
     d.ui.profileBack = ['week', 'onboarding', 'day', 'shopping'].indexOf(raw.ui.profileBack) !== -1 ? raw.ui.profileBack : 'week';
-    d.ui.regionBack = ['onboarding', 'profile', 'week', 'map'].indexOf(raw.ui.regionBack) !== -1 ? raw.ui.regionBack : 'onboarding';
+    d.ui.regionBack = ['onboarding', 'profile', 'week', 'map', 'shopping'].indexOf(raw.ui.regionBack) !== -1 ? raw.ui.regionBack : 'onboarding';
   }
   return d;
 }
@@ -264,6 +312,7 @@ let currentProfile = null;
 let profilePlans = [];
 let authError = '';
 let authBusy = false;
+let storageStats = null;
 let state = loadStateFor(null);
 let lastScreen = null;
 let modalOpen = false;
@@ -321,7 +370,7 @@ function defaultProfileFor(user) {
     name: user.name,
     email: user.email,
     avatar: CONFIG.avatars[0],
-    regionId: state.regionId || 'moscow',
+    regionId: state.regionId || 'orsk',
     createdAt: user.createdAt || Date.now(),
     plansCount: 0,
     replacedCount: 0
@@ -345,6 +394,135 @@ function formatProfileDate(ts) {
     return new Date(ts).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
   } catch (e) { return ''; }
 }
+function formatBytes(bytes) {
+  const n = Number(bytes) || 0;
+  if (n < 1024) return n + ' Б';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' КБ';
+  return (n / (1024 * 1024)).toFixed(1) + ' МБ';
+}
+function storagePillHTML() {
+  const info = typeof dbStatus === 'function' ? dbStatus() : { ready: false, modeLabel: 'проверка' };
+  return '<div class="storage-pill ' + (info.ready ? 'ok' : 'warn') + '">' +
+    '<span class="storage-dot"></span><span>' + (info.ready ? 'Хранилище готово' : 'Хранилище проверяется') + '</span>' +
+    '<small>' + esc(info.modeLabel) + '</small></div>';
+}
+function storagePanelHTML() {
+  const info = storageStats || (typeof dbStatus === 'function' ? dbStatus() : {});
+  const counts = info.counts || { users: 0, profiles: 0, plans: 0 };
+  const usage = info.estimate && info.estimate.usage ? ' · ' + formatBytes(info.estimate.usage) : '';
+  const checked = info.lastCheck ? new Date(info.lastCheck).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : 'ещё не проверялась';
+  return '<div class="storage-panel ' + (info.ready ? 'ok' : 'warn') + '">' +
+    '<div class="storage-panel-head"><div class="storage-panel-title"><span class="storage-dot"></span><b>' +
+    (!info.ready ? 'База недоступна' : info.mode === 'localstorage' ? 'Резервное хранилище' : 'База подключена') + '</b></div>' +
+    '<span class="storage-mode">' + esc(info.modeLabel || '—') + '</span></div>' +
+    '<div class="storage-stats">' +
+    '<span><b>' + (counts.users || 0) + '</b> ' + pluralize(counts.users || 0, ['аккаунт', 'аккаунта', 'аккаунтов']) + '</span>' +
+    '<span><b>' + (counts.profiles || 0) + '</b> ' + pluralize(counts.profiles || 0, ['профиль', 'профиля', 'профилей']) + '</span>' +
+    '<span><b>' + (counts.plans || 0) + '</b> ' + pluralize(counts.plans || 0, ['рацион', 'рациона', 'рационов']) + '</span>' +
+    '</div>' +
+    '<p class="storage-note">Проверено: ' + esc(checked) + usage + '. Пароли хранятся как PBKDF2-хеш, данные не уходят с устройства.</p>' +
+    (info.error ? '<p class="storage-error">' + esc(info.error) + '</p>' : '') +
+    '<div class="storage-actions">' +
+    '<button type="button" class="chip-action" data-action="check-storage">Проверить</button>' +
+    '<button type="button" class="chip-action" data-action="export-data">Скачать копию</button>' +
+    '<button type="button" class="chip-action ghost" data-action="import-data">Импорт</button>' +
+    '</div>' +
+    '<input type="file" id="db-import" accept="application/json,.json" hidden>' +
+    '</div>';
+}
+async function refreshStorageStats(showToast) {
+  try {
+    storageStats = await dbDiagnostics();
+    if (showToast) {
+      toast(!storageStats.ready ? 'Локальное хранилище ограничено'
+        : storageStats.mode === 'localstorage' ? 'Резервное хранилище проверено: ' + storageStats.counts.plans + ' ' + pluralize(storageStats.counts.plans, ['рацион', 'рациона', 'рационов'])
+        : 'База проверена: ' + storageStats.modeLabel);
+    }
+  } catch (e) {
+    storageStats = { ready: false, error: typeof storageErrorText === 'function' ? storageErrorText(e) : String(e.message || e) };
+    if (showToast) toast('Не удалось проверить базу');
+  }
+  return storageStats;
+}
+function downloadJSON(filename, data) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
+}
+async function exportLocalBackup() {
+  try {
+    const data = await dbExportAll();
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadJSON('legkost-backup-' + stamp + '.json', data);
+    toast('Резервная копия скачана');
+  } catch (e) {
+    toast('Не удалось скачать копию: ' + (e.message || e));
+  }
+}
+async function importBackupFile(file) {
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+    if (!window.confirm('Импортировать данные из копии? Записи с совпадающими ID будут заменены.')) return;
+    const result = await dbImportAll(data);
+    storageStats = result.info;
+    await loadProfilePlans();
+    render();
+    toast('Импортировано: ' + result.imported.users + ' ' + pluralize(result.imported.users, ['аккаунт', 'аккаунта', 'аккаунтов']) + ', ' + result.imported.plans + ' ' + pluralize(result.imported.plans, ['рацион', 'рациона', 'рационов']));
+  } catch (e) {
+    const reason = e && e.name === 'ConstraintError'
+      ? 'в базе уже есть аккаунт с такой почтой'
+      : (e.message || e);
+    toast('Импорт не удался: ' + reason);
+  }
+}
+
+/* ───────── ЦЕНЫ ───────── */
+function normalizePriceSnapshot(data) {
+  if (!data || data.regionId !== 'orsk' || !data.ingredients || typeof data.ingredients !== 'object') return null;
+  const merged = Object.assign({}, ORSK_PRICE_SNAPSHOT.ingredients);
+  Object.keys(data.ingredients).forEach(function (key) {
+    const value = Number(data.ingredients[key]);
+    if (isFinite(value) && value > 0) merged[key] = value;
+  });
+  return Object.assign({}, ORSK_PRICE_SNAPSHOT, data, { ingredients: merged });
+}
+async function loadPriceSnapshot() {
+  if (typeof fetch !== 'function' || !/^https?:$/.test(location.protocol)) return false;
+  try {
+    const res = await fetch('data/prices-orsk.json?ts=' + Date.now(), { cache: 'no-store' });
+    if (!res.ok) return false;
+    const data = await res.json();
+    const snap = normalizePriceSnapshot(data);
+    if (!snap) return false;
+    ORSK_PRICE_SNAPSHOT = snap;
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+async function syncPriceSnapshot(manual) {
+  const updated = await loadPriceSnapshot();
+  const snap = priceSnapshotForRegion();
+  if (snap) {
+    snap.checkedAt = Date.now();
+    snap.source = updated ? 'Обновлённый снимок data/prices-orsk.json' : snap.source;
+  }
+  animateNext = false;
+  if (state.ui.screen === 'region' || state.ui.screen === 'week') render();
+  if (manual) {
+    toast(updated
+      ? 'Цены обновлены из data/prices-orsk.json'
+      : 'Используем встроенный снимок цен Орска от ' + (snap ? snap.dateLabel : '22.10.2026'));
+  }
+}
 function planSnapshotForHistory() {
   const info = planInfo();
   if (!info || !state.plan || !currentUser) return null;
@@ -359,7 +537,7 @@ function planSnapshotForHistory() {
     settings: {
       adults: state.adults,
       childrenAges: state.childrenAges.slice(),
-      meals: JSON.parse(JSON.stringify(state.meals)),
+      dayMeals: cloneDayMeals(state.dayMeals),
       budget: state.budget,
       allergies: state.allergies.slice(),
       stop: state.stop.slice(),
@@ -439,12 +617,12 @@ async function registerUser(event) {
   const email = normalizeEmail((document.getElementById('reg-email') || {}).value);
   const password = String((document.getElementById('reg-password') || {}).value || '');
   const password2 = String((document.getElementById('reg-password2') || {}).value || '');
-  const regionId = (document.getElementById('reg-region') || {}).value || 'moscow';
+  const regionId = (document.getElementById('reg-region') || {}).value || 'orsk';
   authDraft.name = name; authDraft.email = email; authDraft.regionId = regionId;
 
   if (name.length < 2) { authError = 'Введи имя — хотя бы 2 символа'; render(); return; }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { authError = 'Проверь адрес почты'; render(); return; }
-  if (password.length < 6) { authError = 'Пароль должен быть не короче 6 символов'; render(); return; }
+  if (password.length < 8) { authError = 'Пароль должен быть не короче 8 символов'; render(); return; }
   if (password !== password2) { authError = 'Пароли не совпадают'; render(); return; }
   if (!REGIONS.some(function (r) { return r.id === regionId; })) { authError = 'Выбери регион'; render(); return; }
 
@@ -487,9 +665,10 @@ async function registerUser(event) {
     authError = '';
     finishAuth(user, profile, 'Аккаунт создан — данные хранятся локально');
     if (state.plan) savePlanToHistory();
+    refreshStorageStats();
   } catch (err) {
     authBusy = false;
-    authError = 'Не удалось сохранить аккаунт в этом браузере';
+    authError = 'Не удалось сохранить аккаунт: ' + (err && err.message ? err.message : 'проверь настройки браузера');
     render();
   }
 }
@@ -528,9 +707,10 @@ async function loginUser(event) {
     authBusy = false;
     authError = '';
     finishAuth(user, profile, 'С возвращением, ' + user.name.split(' ')[0] + '!');
+    refreshStorageStats();
   } catch (err) {
     authBusy = false;
-    authError = 'Не удалось войти. Попробуй ещё раз';
+    authError = 'Не удалось войти: ' + (err && err.message ? err.message : 'попробуй ещё раз');
     render();
   }
 }
@@ -556,6 +736,7 @@ async function openProfile() {
     state.ui.profileBack = state.ui.screen;
   }
   await loadProfilePlans();
+  await refreshStorageStats();
   if (currentProfile) currentProfile.plansCount = Math.max(currentProfile.plansCount || 0, profilePlans.length);
   state.ui.screen = 'profile';
   modalOpen = false;
@@ -580,12 +761,12 @@ async function saveProfileEdit(event) {
   currentProfile.avatar = profileAvatarDraft;
   try {
     await dbPut('users', currentUser);
-    await persistProfile();
+    await dbPut('profiles', currentProfile);
     state.ui.screen = 'profile';
     render();
     toast('Профиль сохранён');
   } catch (e) {
-    toast('Не удалось сохранить профиль');
+    toast('Не удалось сохранить профиль: ' + (e.message || 'ошибка хранилища'));
   }
 }
 async function deleteAccount() {
@@ -597,7 +778,11 @@ async function deleteAccount() {
     await Promise.all((plans || []).map(function (p) { return dbDelete('plans', p.id); }));
     await dbDelete('profiles', userId);
     await dbDelete('users', userId);
-  } catch (e) {}
+    if (typeof dbPurgeFallbackAccount === 'function') dbPurgeFallbackAccount(userId);
+  } catch (e) {
+    toast('Не удалось удалить аккаунт: ' + (e.message || 'ошибка хранилища'));
+    return;
+  }
   try {
     localStorage.removeItem(stateKey(userId));
     localStorage.removeItem(planKey(userId));
@@ -653,7 +838,7 @@ function mapPointList() {
     [0.030, 0.018], [-0.024, -0.010], [0.004, 0.032], [0.026, -0.026],
     [-0.031, 0.009], [0.015, -0.038]
   ];
-  return availableStores().map(function (store, i) {
+  return availableStores().filter(function (store) { return store.kind !== 'service'; }).map(function (store, i) {
     const off = offsets[i % offsets.length];
     return {
       store: store,
@@ -662,13 +847,13 @@ function mapPointList() {
     };
   });
 }
-function mapEmbedURL() {
+function staticMapURL() {
   const region = getRegion();
   const points = mapPointList().map(function (p) {
     return p.lon.toFixed(5) + ',' + p.lat.toFixed(5) + ',pm2rdm';
   }).join('~');
-  return 'https://yandex.ru/map-widget/v1/?ll=' + encodeURIComponent(region.center[1].toFixed(5) + ',' + region.center[0].toFixed(5)) +
-    '&z=' + region.zoom + '&pt=' + encodeURIComponent(points) + '&lang=ru_RU';
+  return 'https://static-maps.yandex.ru/1.x/?ll=' + encodeURIComponent(region.center[1].toFixed(5) + ',' + region.center[0].toFixed(5)) +
+    '&z=' + region.zoom + '&size=650,420&l=map&pt=' + encodeURIComponent(points) + '&lang=ru_RU';
 }
 function yandexMapsLink() {
   const region = getRegion();
@@ -746,8 +931,11 @@ function getStore() {
 }
 function effectiveStoreCoef(store) {
   const region = getRegion();
-  if (!store) return region.priceCoef;
-  return store.coef * region.priceCoef * ((region.storeCoefs && region.storeCoefs[store.id]) || 1);
+  // Для Орска снимок витрин уже содержит местные цены. Повторно применять
+  // региональную скидку нельзя — иначе цены уходят ниже реальных.
+  const regionCoef = priceSnapshotForRegion() ? 1 : region.priceCoef;
+  if (!store) return regionCoef;
+  return store.coef * regionCoef * ((region.storeCoefs && region.storeCoefs[store.id]) || 1);
 }
 function storeCoef() {
   return effectiveStoreCoef(getStore());
@@ -757,19 +945,46 @@ function coefLabel(store) {
   if (diff === 0) return 'база';
   return (diff > 0 ? '+' : '−') + Math.abs(diff) + '%';
 }
+function priceSnapshotForRegion() {
+  return ORSK_PRICE_SNAPSHOT && state.regionId === ORSK_PRICE_SNAPSHOT.regionId ? ORSK_PRICE_SNAPSHOT : null;
+}
+function baseIngredientPrice(ing) {
+  const snap = priceSnapshotForRegion();
+  if (snap && snap.ingredients && typeof snap.ingredients[ing.id] === 'number') {
+    return snap.ingredients[ing.id];
+  }
+  return ing.pricePerUnit;
+}
 function ingredientPrice(ing) {
-  return Math.round(ing.pricePerUnit * storeCoef());
+  return Math.max(1, Math.round(baseIngredientPrice(ing) * storeCoef()));
 }
 function peopleCount() { return state.adults + state.childrenAges.length; }
 function volumeK() { return state.adults * 1 + state.childrenAges.length * CONFIG.kidK; }
-function activeSlots() {
+function dayMealSetting(dayIdx, slot) {
+  const day = state.dayMeals[clamp(parseInt(dayIdx, 10) || 0, 0, 6)];
+  return day && day[slot] ? day[slot] : { self: false, family: false };
+}
+function daySlots(dayIdx) {
   return CONFIG.mealOrder.filter(function (slot) {
-    return state.meals[slot] && (state.meals[slot].self || state.meals[slot].family);
+    const m = dayMealSetting(dayIdx, slot);
+    return m.self || m.family;
   });
 }
-function isFamilySlot(slot) { return !!(state.meals[slot] && state.meals[slot].family); }
-function slotPortions(slot) { return isFamilySlot(slot) ? peopleCount() : 1; }
-function slotK(slot) { return isFamilySlot(slot) ? volumeK() : 1; }
+function weekSlots() {
+  const used = {};
+  for (let i = 0; i < 7; i++) daySlots(i).forEach(function (slot) { used[slot] = true; });
+  return CONFIG.mealOrder.filter(function (slot) { return used[slot]; });
+}
+/* Без аргумента — объединение по неделе; с днём — только этот день. */
+function activeSlots(dayIdx) {
+  return dayIdx === undefined || dayIdx === null ? weekSlots() : daySlots(dayIdx);
+}
+function hasAnyMeal() { return weekSlots().length > 0; }
+function isFamilySlot(slot, dayIdx) {
+  return dayMealSetting(dayIdx === undefined ? 0 : dayIdx, slot).family;
+}
+function slotPortions(slot, dayIdx) { return isFamilySlot(slot, dayIdx) ? peopleCount() : 1; }
+function slotK(slot, dayIdx) { return isFamilySlot(slot, dayIdx) ? volumeK() : 1; }
 function realAllergies() {
   return state.allergies.filter(function (a) { return a !== 'none'; });
 }
@@ -845,39 +1060,115 @@ function dishCost(dish, family) {
   return Math.round(total);
 }
 
+function macroTargetForSlot(slot) {
+  const target = CONFIG.macroTargets;
+  const share = CONFIG.macroShares[slot] || { kcal: 1 / 3, p: 1 / 3, f: 1 / 3, c: 1 / 3 };
+  return {
+    kcal: target.kcal * share.kcal,
+    p: target.p * share.p,
+    f: target.f * share.f,
+    c: target.c * share.c
+  };
+}
+function macroTargetForSlots(slots) {
+  const target = CONFIG.macroTargets;
+  const total = { kcal: 0, p: 0, f: 0, c: 0 };
+  (slots || []).forEach(function (slot) {
+    const share = CONFIG.macroShares[slot] || { kcal: 1 / 3, p: 1 / 3, f: 1 / 3, c: 1 / 3 };
+    total.kcal += target.kcal * share.kcal;
+    total.p += target.p * share.p;
+    total.f += target.f * share.f;
+    total.c += target.c * share.c;
+  });
+  return total;
+}
+function macroDeviation(macros, target) {
+  const m = macros || { kcal: 0, p: 0, f: 0, c: 0 };
+  return Math.abs(m.kcal - target.kcal) / Math.max(1, target.kcal) * 1.15 +
+    Math.abs(m.p - target.p) / Math.max(1, target.p) * 1.00 +
+    Math.abs(m.f - target.f) / Math.max(1, target.f) * 0.85 +
+    Math.abs(m.c - target.c) / Math.max(1, target.c) * 0.80;
+}
 function generatePlan() {
-  const slots = activeSlots();
-  if (!slots.length) return false;
+  const slotsAll = weekSlots();
+  if (!slotsAll.length) return false;
   const pools = {};
-  slots.forEach(function (slot) { pools[slot] = dishCandidates(slot); });
-  if (slots.every(function (slot) { return pools[slot].length === 0; })) return false;
+  slotsAll.forEach(function (slot) { pools[slot] = dishCandidates(slot); });
+  if (slotsAll.every(function (slot) { return pools[slot].length === 0; })) return false;
 
   const days = [];
   const lastUsed = {};
-  slots.forEach(function (s) { lastUsed[s] = {}; });
+  slotsAll.forEach(function (slot) { lastUsed[slot] = {}; });
+  const dailyBudget = Math.max(700, state.budget / 7);
+  let projectedCost = 0;
 
   for (let day = 0; day < 7; day++) {
+    const slots = daySlots(day);
     const meals = {};
     const skipped = [];
+    let dayCost = 0;
+    const dayMacro = { kcal: 0, p: 0, f: 0, c: 0 };
+    const dayTarget = macroTargetForSlots(slots);
+
     slots.forEach(function (slot) {
       const pool = pools[slot];
       if (!pool.length) { skipped.push(slot); return; }
-      const fresh = pool.filter(function (dish) {
+      const family = isFamilySlot(slot, day);
+      const slotTarget = macroTargetForSlot(slot);
+
+      const scored = pool.map(function (dish) {
+        const macros = dish.macros || { kcal: 0, p: 0, f: 0, c: 0 };
+        const cost = dishCost(dish, family);
+        let score = macroDeviation(macros, slotTarget);
+
+        /* Не даём дню сильно уйти за норму, но оставляем пространство
+           для блюд с чуть большей калорийностью. */
+        const after = {
+          kcal: dayMacro.kcal + macros.kcal,
+          p: dayMacro.p + macros.p,
+          f: dayMacro.f + macros.f,
+          c: dayMacro.c + macros.c
+        };
+        score += macroDeviation(after, dayTarget) * 0.28;
+
+        /* Разнообразие: блюдо, которое было недавно, получает штраф. */
         const last = lastUsed[slot][dish.id];
-        return last === undefined || day - last >= 3;
-      });
-      const pickFrom = fresh.length ? fresh : pool;
-      const dish = pickFrom[Math.floor(Math.random() * pickFrom.length)];
-      meals[slot] = { dishId: dish.id, family: isFamilySlot(slot) };
-      lastUsed[slot][dish.id] = day;
+        if (last !== undefined) score += Math.max(0, 3 - (day - last)) * 0.65;
+
+        /* Мягко удерживаем неделю в бюджете. */
+        score += (cost / Math.max(1, dailyBudget)) * 0.38;
+        if (projectedCost + cost > state.budget) score += 0.75;
+
+        return { dish: dish, cost: cost, score: score + Math.random() * 0.12 };
+      }).sort(function (a, b) { return a.score - b.score; });
+
+      const top = scored.slice(0, Math.min(6, scored.length));
+      const weights = top.map(function (item) { return 1 / (0.22 + Math.max(0, item.score)); });
+      let pick = top[0];
+      const totalWeight = weights.reduce(function (s, w) { return s + w; }, 0);
+      let roll = Math.random() * totalWeight;
+      for (let i = 0; i < top.length; i++) {
+        roll -= weights[i];
+        if (roll <= 0) { pick = top[i]; break; }
+      }
+
+      const chosen = pick.dish;
+      meals[slot] = { dishId: chosen.id, family: family };
+      lastUsed[slot][chosen.id] = day;
+      dayCost += pick.cost;
+      const m = chosen.macros || { kcal: 0, p: 0, f: 0, c: 0 };
+      dayMacro.kcal += m.kcal; dayMacro.p += m.p; dayMacro.f += m.f; dayMacro.c += m.c;
     });
+
+    projectedCost += dayCost;
     days.push({ meals: meals, skipped: skipped });
   }
 
   state.plan = {
     createdAt: Date.now(),
     days: days,
-    partial: days.some(function (d) { return d.skipped.length > 0; })
+    partial: days.some(function (d) { return d.skipped.length > 0; }),
+    macroTargets: Object.assign({}, CONFIG.macroTargets)
   };
   state.shoppingChecked = [];
   saveState();
@@ -905,16 +1196,28 @@ function mealInfo(day, slot) {
 function dayInfo(dayIndex) {
   if (!state.plan || !state.plan.days[dayIndex]) return null;
   const day = state.plan.days[dayIndex];
-  const active = activeSlots();
+  const active = daySlots(dayIndex);
   const meals = active.map(function (slot) { return mealInfo(day, slot); }).filter(Boolean);
   const cost = meals.reduce(function (sum, m) { return sum + m.cost; }, 0);
-  const denom = Math.max(1, peopleCount() * Math.max(1, active.length));
+  const macros = { kcal: 0, p: 0, f: 0, c: 0 };
+  meals.forEach(function (m) {
+    const x = m.dish.macros || {};
+    macros.kcal += x.kcal || 0;
+    macros.p += x.p || 0;
+    macros.f += x.f || 0;
+    macros.c += x.c || 0;
+  });
+  const portionCount = meals.reduce(function (sum, m) { return sum + m.portions; }, 0);
+  const denom = Math.max(1, portionCount);
   return {
     day: day,
     meals: meals,
     cost: cost,
+    portions: portionCount,
     perPortion: Math.round(cost / denom),
     active: active,
+    macros: macros,
+    macroTargets: macroTargetForSlots(active),
     dayIndex: dayIndex
   };
 }
@@ -924,6 +1227,30 @@ function planInfo() {
   const cost = days.reduce(function (sum, d) { return sum + (d ? d.cost : 0); }, 0);
   const portions = days.reduce(function (sum, d) { return sum + (d ? d.meals.length : 0); }, 0);
   const perPerson = Math.round(cost / Math.max(1, peopleCount()));
+  const macroTotals = { kcal: 0, p: 0, f: 0, c: 0 };
+  const macroTargetsTotal = { kcal: 0, p: 0, f: 0, c: 0 };
+  let plannedDays = 0;
+  days.forEach(function (d) {
+    if (!d || !d.meals.length) return;
+    plannedDays++;
+    Object.keys(macroTotals).forEach(function (key) {
+      macroTotals[key] += d.macros[key];
+      macroTargetsTotal[key] += d.macroTargets[key];
+    });
+  });
+  const denom = Math.max(1, plannedDays);
+  const macroAvg = {
+    kcal: Math.round(macroTotals.kcal / denom),
+    p: Math.round(macroTotals.p / denom),
+    f: Math.round(macroTotals.f / denom),
+    c: Math.round(macroTotals.c / denom)
+  };
+  const macroTargets = {
+    kcal: Math.round(macroTargetsTotal.kcal / denom),
+    p: Math.round(macroTargetsTotal.p / denom),
+    f: Math.round(macroTargetsTotal.f / denom),
+    c: Math.round(macroTargetsTotal.c / denom)
+  };
   return {
     days: days,
     cost: cost,
@@ -931,6 +1258,10 @@ function planInfo() {
     portions: portions,
     over: cost - state.budget,
     under: cost <= state.budget,
+    macros: macroAvg,
+    macroTotals: macroTotals,
+    plannedDays: plannedDays,
+    macroTargets: macroTargets,
     shopping: shoppingInfo()
   };
 }
@@ -938,8 +1269,8 @@ function planInfo() {
 function shoppingInfo() {
   const map = {};
   if (!state.plan) return { items: [], groups: [], total: 0, count: 0, checked: 0 };
-  state.plan.days.forEach(function (day) {
-    activeSlots().forEach(function (slot) {
+  state.plan.days.forEach(function (day, dayIndex) {
+    daySlots(dayIndex).forEach(function (slot) {
       const m = mealInfo(day, slot);
       if (!m) return;
       m.dish.ingredients.forEach(function (it) {
@@ -991,6 +1322,32 @@ function ringSVG(ratio, label, sub, size, color) {
     '</svg><div class="ring-center"><span class="ring-label">' + label + '</span>' +
     (sub ? '<span class="ring-sub">' + sub + '</span>' : '') + '</div></div>';
 }
+function macroProgressHTML(macros, targets, title, subtitle) {
+  const rows = [
+    { key: 'p', name: 'Белки', unit: 'г', color: '#4C8FBF' },
+    { key: 'f', name: 'Жиры', unit: 'г', color: '#D9A441' },
+    { key: 'c', name: 'Углеводы', unit: 'г', color: '#7E9E56' },
+    { key: 'kcal', name: 'Калории', unit: 'ккал', color: '#E96D3F' }
+  ];
+  let allOk = true;
+  const html = rows.map(function (row) {
+    const value = Math.round((macros && macros[row.key]) || 0);
+    const target = Math.max(1, Math.round((targets && targets[row.key]) || 1));
+    const pct = value / target * 100;
+    const stateClass = pct < 80 ? 'low' : pct > 120 ? 'high' : 'ok';
+    if (stateClass !== 'ok') allOk = false;
+    return '<div class="macro-progress-row">' +
+      '<div class="macro-progress-top"><span class="macro-progress-name"><i style="background:' + row.color + '"></i>' + row.name + '</span>' +
+      '<span class="macro-progress-val"><b>' + value + '</b> / ' + target + ' ' + row.unit + '</span></div>' +
+      '<div class="macro-progress-track"><span class="' + stateClass + '" style="width:' + clamp(pct, 2, 132).toFixed(1) + '%;background:' + row.color + '"></span></div>' +
+      '</div>';
+  }).join('');
+  return '<div class="card macro-progress-card">' +
+    '<div class="macro-progress-head"><div><div class="macro-progress-title">' + esc(title || 'БЖУ') + '</div>' +
+    (subtitle ? '<div class="macro-progress-sub">' + esc(subtitle) + '</div>' : '') + '</div>' +
+    '<span class="macro-badge ' + (allOk ? 'ok' : 'warn') + '">' + (allOk ? '✓ в балансе' : '≈ к норме') + '</span></div>' +
+    '<div class="macro-progress-list">' + html + '</div></div>';
+}
 function logoHTML() {
   return '<div class="app-logo" aria-hidden="true">🥗</div>';
 }
@@ -1021,7 +1378,8 @@ function primaryBtn(label, action, disabled, extra) {
     (disabled ? ' disabled' : '') + (extra ? ' ' + extra : '') + '>' + label + '</button>';
 }
 function activeMealsText() {
-  return activeSlots().map(function (s) { return CONFIG.meals[s].lower; }).join(', ');
+  const slots = weekSlots();
+  return slots.length ? slots.map(function (s) { return CONFIG.meals[s].lower; }).join(', ') : 'ничего не выбрано';
 }
 
 /* ───────── ВХОД, РЕГИСТРАЦИЯ, ПРОФИЛЬ ───────── */
@@ -1055,7 +1413,7 @@ function renderAuth() {
 }
 
 function renderRegister() {
-  const selectedRegion = authDraft.regionId || state.regionId || 'moscow';
+  const selectedRegion = authDraft.regionId || state.regionId || 'orsk';
   const options = REGIONS.map(function (r) {
     return '<option value="' + r.id + '"' + (selectedRegion === r.id ? ' selected' : '') + '>' + esc(r.name) + '</option>';
   }).join('');
@@ -1063,17 +1421,18 @@ function renderRegister() {
     '<div class="wizard-top">' + backButton('auth-back') + '</div>' +
     '<header class="page-head"><div class="eyebrow">ЛОКАЛЬНЫЙ АККАУНТ</div><h1>Создать профиль</h1>' +
     '<p class="sub">Имя, почта и пароль нужны только для входа в этом браузере.</p></header>' +
+    storagePillHTML() +
     '<form class="auth-form" data-form="register" novalidate>' +
     '<label class="field"><span>Как тебя зовут</span><input id="reg-name" type="text" autocomplete="name" maxlength="40" value="' + esc(authDraft.name) + '" placeholder="Например, Аня"></label>' +
     '<label class="field"><span>Почта</span><input id="reg-email" type="email" autocomplete="username" inputmode="email" value="' + esc(authDraft.email) + '" placeholder="anna@example.ru"></label>' +
-    '<label class="field"><span>Пароль</span><input id="reg-password" type="password" autocomplete="new-password" minlength="6" placeholder="Минимум 6 символов"></label>' +
-    '<label class="field"><span>Повтори пароль</span><input id="reg-password2" type="password" autocomplete="new-password" minlength="6" placeholder="Ещё раз"></label>' +
+    '<label class="field"><span>Пароль</span><input id="reg-password" type="password" autocomplete="new-password" minlength="8" placeholder="Минимум 8 символов"></label>' +
+    '<label class="field"><span>Повтори пароль</span><input id="reg-password2" type="password" autocomplete="new-password" minlength="8" placeholder="Ещё раз"></label>' +
     '<label class="field"><span>Регион</span><select id="reg-region">' + options + '</select></label>' +
     authErrorHTML() +
     '<button type="submit" class="btn btn-primary">Создать аккаунт</button>' +
     '</form>' +
     '<button type="button" class="auth-link" data-action="auth-login">Уже есть аккаунт? Войти</button>' +
-    '<p class="auth-note">Пароль хранится в виде криптографического хеша в IndexedDB. Данные не покидают устройство.</p>' +
+    '<p class="auth-note">Пароль хранится как PBKDF2-хеш. Основное хранилище — IndexedDB; если браузер его блокирует, приложение переключится на localStorage и покажет это в профиле.</p>' +
     '</div></section>';
 }
 
@@ -1082,6 +1441,7 @@ function renderLogin() {
     '<div class="wizard-top">' + backButton('auth-back') + '</div>' +
     '<header class="page-head"><div class="eyebrow">С ВОЗВРАЩЕНИЕМ</div><h1>Войти в профиль</h1>' +
     '<p class="sub">Продолжи со своим рационом, настройками и списком покупок.</p></header>' +
+    storagePillHTML() +
     '<form class="auth-form" data-form="login" novalidate>' +
     '<label class="field"><span>Почта</span><input id="login-email" type="email" autocomplete="username" inputmode="email" value="' + esc(authDraft.email) + '" placeholder="anna@example.ru"></label>' +
     '<label class="field"><span>Пароль</span><input id="login-password" type="password" autocomplete="current-password" placeholder="Твой пароль"></label>' +
@@ -1122,8 +1482,8 @@ function renderProfile() {
     '<div class="profile-since">В «Лёгкости» с ' + esc(formatProfileDate(created)) + '</div></div>' +
     '</div>' +
     '<div class="profile-stats">' +
-    '<div class="stat-tile"><b>' + count + '</b><span>рационов</span></div>' +
-    '<div class="stat-tile"><b>' + ((currentProfile && currentProfile.replacedCount) || 0) + '</b><span>замен</span></div>' +
+    '<div class="stat-tile"><b>' + count + '</b><span>' + pluralize(count, ['рацион', 'рациона', 'рационов']) + '</span></div>' +
+    '<div class="stat-tile"><b>' + ((currentProfile && currentProfile.replacedCount) || 0) + '</b><span>' + pluralize((currentProfile && currentProfile.replacedCount) || 0, ['замена', 'замены', 'замен']) + '</span></div>' +
     '<div class="stat-tile"><b>' + days + '</b><span>' + pluralize(days, ['день', 'дня', 'дней']) + '</span></div>' +
     '</div>' +
     '<div class="profile-section"><div class="section-title">Настройки рациона</div><div class="settings-card">' +
@@ -1135,11 +1495,12 @@ function renderProfile() {
     '<div class="profile-section"><div class="profile-section-head"><div class="section-title">Мои рационы</div>' +
     (profilePlans.length ? '<button type="button" class="text-link" data-action="open-history">Все</button>' : '') + '</div>' +
     '<div class="history-card">' + historyHTML + '</div></div>' +
+    '<div class="profile-section"><div class="section-title">Хранилище и данные</div>' + storagePanelHTML() + '</div>' +
     '<div class="profile-actions">' +
     '<button type="button" class="btn btn-secondary" data-action="edit-profile">Редактировать профиль</button>' +
     '<button type="button" class="btn btn-ghost" data-action="logout">Выйти</button>' +
     '</div>' +
-    '<div class="profile-data"><b>Локальная база IndexedDB</b><span>Профиль, настройки и рационы не отправляются на сервер. Фото блюд — Wikimedia Commons.</span>' +
+    '<div class="profile-data"><b>Профиль остаётся на устройстве</b><span>Аккаунт, настройки и рационы не отправляются на сервер. Фото блюд и магазинов — Wikimedia Commons.</span>' +
     '<a href="https://github.com/BladAdd/legkost/blob/main/assets/CREDITS.md" target="_blank" rel="noopener">Авторы фотографий</a></div>' +
     '<button type="button" class="danger-link" data-action="delete-account">Удалить аккаунт</button>' +
     '</div></section>';
@@ -1186,19 +1547,40 @@ function renderHistory() {
 
 function renderRegion() {
   const current = getRegion();
+  const snapshot = priceSnapshotForRegion();
   const rows = REGIONS.map(function (r) {
     const diff = Math.round((r.priceCoef - 1) * 100);
-    const price = diff === 0 ? 'базовые цены' : (diff > 0 ? '+' : '−') + Math.abs(diff) + '% к цене';
+    const price = r.id === 'orsk' && ORSK_PRICE_SNAPSHOT
+      ? 'снимок цен'
+      : diff === 0 ? 'базовые цены' : (diff > 0 ? '+' : '−') + Math.abs(diff) + '% к цене';
+    const photo = r.photoThumb
+      ? '<img class="region-photo" src="' + esc(r.photoThumb) + '" alt="' + esc(r.name) + '" loading="lazy">'
+      : '<span class="region-photo region-photo-fallback">📍</span>';
     return '<button type="button" class="region-row' + (r.id === current.id ? ' selected' : '') + '" data-action="select-region" data-id="' + r.id + '">' +
-      '<span class="region-pin">📍</span><span class="region-main"><span class="region-name">' + esc(r.name) + '</span>' +
+      photo + '<span class="region-main"><span class="region-name">' + esc(r.name) + (r.id === 'orsk' ? ' <em class="home-badge">домашний</em>' : '') + '</span>' +
       '<span class="region-meta">' + esc(r.area) + ' · ' + r.storeIds.length + ' магазинов</span></span>' +
       '<span class="region-price">' + esc(price) + '</span><span class="check-badge">✓</span></button>';
   }).join('');
+  const hero = current.photo
+    ? '<div class="region-hero"><img src="' + esc(current.photo) + '" alt="' + esc(current.name) + '"><div class="region-hero-shade"></div>' +
+      '<div class="region-hero-text"><div class="eyebrow light">ОСНОВНОЙ РЕГИОН</div><h2>' + esc(current.name) + '</h2>' +
+      '<p>' + esc(current.description || current.area) + '</p>' +
+      (current.highlights ? '<div class="region-hero-chips">' + current.highlights.map(function (t) { return '<span>' + esc(t) + '</span>'; }).join('') + '</div>' : '') +
+      '</div></div>'
+    : '';
+  const syncCard = snapshot
+    ? '<div class="price-sync-card"><div class="price-sync-main"><div class="price-sync-title">🛵 Цены Орска</div>' +
+      '<div class="price-sync-meta">' + esc(snapshot.source) + '<br>' + esc(snapshot.dateLabel) + ' · ' + Object.keys(snapshot.ingredients || {}).length + ' позиций</div></div>' +
+      '<button type="button" class="chip-action" data-action="sync-prices">Обновить</button></div>' +
+      '<p class="price-sync-note">' + esc(snapshot.disclaimer) +
+      (snapshot.sourceUrl ? ' <a href="' + esc(snapshot.sourceUrl) + '" target="_blank" rel="noopener">Открыть витрину ↗</a>' : '') + '</p>'
+    : '';
   return '<section class="screen region-screen"><div class="screen-body">' +
     '<div class="day-head">' + backButton('region-back') + '<div class="eyebrow">РЕГИОН</div></div>' +
-    '<header class="page-head"><h1>Откуда ты?</h1><p class="sub">От региона зависят доступные магазины и цены в рационе.</p></header>' +
+    '<header class="page-head"><h1>Откуда ты?</h1><p class="sub">Орск — основной регион: здесь свои магазины, адреса и снимок цен.</p></header>' +
+    hero + syncCard +
     '<div class="region-list">' + rows + '</div>' +
-    '<p class="footnote">Цены демонстрационные: базовая стоимость умножается на индекс региона и коэффициент магазина.</p>' +
+    '<p class="footnote">Цены: базовая стоимость × индекс региона × коэффициент магазина. В Орске локальный снимок витрин уже учитывает местные цены — сверху применяется только коэффициент магазина. Точную сумму смотри в корзине доставки.</p>' +
     '</div></section>';
 }
 
@@ -1206,21 +1588,31 @@ function renderMap() {
   const region = getRegion();
   const stores = availableStores();
   const rows = stores.map(function (s) {
+    const photo = s.image
+      ? '<img class="map-store-photo" src="' + esc(s.image) + '" alt="' + esc(s.name) + '" loading="lazy">'
+      : '<span class="map-store-photo map-store-photo-fallback" style="background:' + s.color + '">' + esc(s.letter) + '</span>';
     return '<button type="button" class="map-store-row' + (state.storeId === s.id ? ' selected' : '') + '" data-action="map-select-store" data-id="' + s.id + '">' +
-      '<span class="store-logo" style="background:' + s.color + '">' + esc(s.letter) + '</span>' +
-      '<span class="map-store-main"><span class="map-store-name">' + esc(s.name) + '</span><span class="map-store-slogan">' + esc(s.slogan) + '</span></span>' +
+      photo +
+      '<span class="map-store-main"><span class="map-store-name">' + esc(s.name) + (s.kind === 'service' ? ' <em class="service-badge">доставка</em>' : '') + '</span>' +
+      '<span class="map-store-slogan">' + esc(s.address || s.slogan) + '</span>' +
+      (s.delivery ? '<span class="map-store-delivery">' + (s.delivery.service === 'Самовывоз' ? '🚶 ' : '🛵 ') + esc(s.delivery.eta) + (s.delivery.min ? ' · от ' + s.delivery.min + ' ₽' : '') + '</span>' : '') +
+      '</span>' +
       '<span class="map-store-coef">' + coefLabel(s) + '</span>' +
       (state.storeId === s.id ? '<span class="check-badge">✓</span>' : '<span class="map-store-arrow">›</span>') +
       '</button>';
   }).join('');
   return '<section class="screen map-screen"><div class="screen-body">' +
     '<div class="day-head">' + backButton('map-back') + '<div class="eyebrow">ЯНДЕКС.КАРТЫ</div></div>' +
-    '<header class="page-head"><h1>Магазины рядом</h1><p class="sub">' + esc(region.name) + ' · ' + stores.length + ' доступных магазинов</p></header>' +
-    '<div class="region-pill"><span>📍 ' + esc(region.name) + '</span><button type="button" class="text-link" data-action="open-region" data-from="map">Сменить</button></div>' +
-    '<div class="map-frame"><iframe src="' + esc(mapEmbedURL()) + '" title="Карта магазинов в регионе ' + esc(region.name) + '" loading="lazy" allowfullscreen></iframe></div>' +
+    '<header class="page-head"><h1>Магазины рядом</h1><p class="sub">' + esc(region.name) + ' · ' + stores.length + ' доступных магазинов и сервисов</p></header>' +
+    '<div class="region-pill"><span>📍 ' + esc(region.name) + ' · ' + esc(region.area) + '</span><button type="button" class="text-link" data-action="open-region" data-from="map">Сменить</button></div>' +
+    '<a class="map-frame" href="' + esc(yandexMapsLink()) + '" target="_blank" rel="noopener" aria-label="Открыть карту магазинов в Яндекс.Картах">' +
+    '<img class="map-image" src="' + esc(staticMapURL()) + '" alt="Карта магазинов в регионе ' + esc(region.name) + '" loading="lazy" decoding="async" onerror="this.hidden=true;this.parentNode.classList.add(&quot;map-offline&quot;)">' +
+    '<span class="map-open-chip">Открыть карту ↗</span>' +
+    '<span class="map-offline-text">Карта временно недоступна — откройте Яндекс.Карты</span>' +
+    '</a>' +
     '<div class="map-caption"><span>Точки — ориентир по магазинам региона.</span><a href="' + esc(yandexMapsLink()) + '" target="_blank" rel="noopener">Открыть в Яндекс.Картах ↗</a></div>' +
     '<div class="map-stores">' + rows + '</div>' +
-    '<p class="footnote">Карта загружается с сервиса Яндекс.Карт. Выбор магазина сразу применяет его цены к рациону.</p>' +
+    '<p class="footnote">Карта загружается с сервиса Яндекс.Карт. Выбор магазина сразу применяет его цены к рациону. Адреса и время доставки стоит уточнить в приложении сервиса.</p>' +
     '</div></section>';
 }
 
@@ -1242,13 +1634,22 @@ function renderStepStore() {
   const stores = availableStores();
   const cards = stores.map(function (s) {
     const selected = state.storeId === s.id;
-    return '<button type="button" class="store-card' + (selected ? ' selected' : '') + '" data-action="select-store" data-id="' + s.id + '" data-search="' + esc((s.name + ' ' + s.slogan + ' ' + region.name).toLowerCase()) + '">' +
+    const search = [s.name, s.slogan, s.address || '', s.delivery ? s.delivery.service : '', region.name].join(' ').toLowerCase();
+    const photo = s.image
+      ? '<img class="store-photo" src="' + esc(s.image) + '" alt="' + esc(s.name) + ' в ' + esc(region.name) + '" loading="lazy">'
+      : '<span class="store-photo store-photo-fallback" style="background:linear-gradient(135deg,' + s.color + ',#F5A65B)">' + esc(s.letter) + '</span>';
+    return '<button type="button" class="store-card' + (selected ? ' selected' : '') + '" data-action="select-store" data-id="' + s.id + '" data-search="' + esc(search) + '">' +
+      '<span class="store-photo-wrap">' + photo +
       '<span class="store-logo" style="background:' + s.color + '">' + esc(s.letter) + '</span>' +
+      (s.kind === 'service' ? '<span class="store-service-badge">доставка</span>' : '') + '</span>' +
+      '<span class="store-card-body">' +
       '<span class="store-name">' + esc(s.name) + '</span>' +
       '<span class="store-slogan">' + esc(s.slogan) + '</span>' +
-      '<span class="store-coef">' + coefLabel(s) + '</span>' +
-      '<span class="check-badge">✓</span>' +
-      '</button>';
+      (s.delivery ? '<span class="store-delivery-line">' + (s.delivery.service === 'Самовывоз' ? '🚶 ' : '🛵 ') + esc(s.delivery.eta) + ' · ' + (s.delivery.min ? 'от ' + s.delivery.min + ' ₽' : 'без минимума') + '</span>' : '') +
+      (s.address ? '<span class="store-address-line">📍 ' + esc(s.address) + (s.branches ? ' · ' + s.branches + ' адр.' : '') + '</span>' : '') +
+      '<span class="store-card-foot"><span class="store-coef">' + coefLabel(s) + '</span>' +
+      (s.deliveryUrl ? '<span class="store-link">' + (s.delivery && s.delivery.service === 'Самовывоз' ? 'адреса ↗' : 'доставка ↗') + '</span>' : '') + '</span>' +
+      '</span><span class="check-badge">✓</span></button>';
   }).join('');
   return '<section class="screen onboarding">' +
     '<div class="screen-body">' +
@@ -1264,6 +1665,9 @@ function renderStepStore() {
     '<input type="search" id="store-search" placeholder="Найти магазин в ' + esc(region.name) + '" autocomplete="off" aria-label="Найти магазин"></label>' +
     '<div class="store-grid" id="store-grid">' + cards + '</div>' +
     '<div class="empty-search" id="store-empty" hidden>Магазин не найден</div>' +
+    '<div class="store-quick-links"><span>Доставка в ' + esc(region.name) + ':</span>' +
+    '<a href="https://eda.yandex.ru/Orsk/retail" target="_blank" rel="noopener">Яндекс Еда ↗</a>' +
+    '<a href="https://web.kuper.ru/" target="_blank" rel="noopener">Купер ↗</a></div>' +
     '</div>' +
     ctaBar(primaryBtn('Дальше', 'step-next', !state.storeId)) +
     '</section>';
@@ -1313,26 +1717,43 @@ function renderStepPeople() {
 }
 
 function renderStepMeals() {
-  const section = function (kind, title, suffix) {
+  const dayIdx = clamp(parseInt(state.ui.mealDay, 10) || 0, 0, 6);
+  state.ui.mealDay = dayIdx;
+  const day = state.dayMeals[dayIdx];
+  const tabs = CONFIG.daysShort.map(function (name, i) {
+    const count = daySlots(i).length;
+    return '<button type="button" class="meal-day-tab' + (i === dayIdx ? ' active' : '') + '" data-action="meal-day" data-day="' + i + '" aria-pressed="' + (i === dayIdx) + '">' +
+      '<b>' + name + '</b><small>' + (count ? count : '—') + '</small></button>';
+  }).join('');
+  const section = function (kind, title) {
     return '<div class="meal-section"><div class="caps-label">' + title + '</div>' +
       CONFIG.mealOrder.map(function (slot) {
-        const checked = state.meals[slot][kind];
-        return '<button type="button" class="meal-row' + (checked ? ' checked' : '') + '" data-action="meal-toggle" data-slot="' + slot + '" data-kind="' + kind + '">' +
+        const checked = !!(day[slot] && day[slot][kind]);
+        return '<button type="button" class="meal-row' + (checked ? ' checked' : '') + '" data-action="meal-toggle" data-day="' + dayIdx + '" data-slot="' + slot + '" data-kind="' + kind + '">' +
           '<span class="meal-emoji">' + CONFIG.meals[slot].emoji + '</span>' +
-          '<span class="meal-name">' + CONFIG.meals[slot].name + suffix + '</span>' +
+          '<span class="meal-name">' + CONFIG.meals[slot].name + (kind === 'family' ? ' на всех' : '') + '</span>' +
           '<span class="checkbox">' + (checked ? '✓' : '') + '</span>' +
           '</button>';
       }).join('') + '</div>';
   };
-  const none = activeSlots().length === 0;
+  const none = !hasAnyMeal();
+  const dayCount = daySlots(dayIdx).length;
   return '<section class="screen onboarding">' +
     '<div class="screen-body">' +
     wizardHeader() +
-    '<header class="page-head"><h1>Сколько приёмов пищи в день?</h1>' +
-    '<p class="sub">Отметь, что готовишь только себе, а что — на всю семью.</p></header>' +
-    section('self', 'ТЫ', '') +
-    section('family', 'СЕМЬЯ', '') +
-    '<p class="footnote">' + (none ? '⚠️ Выбери хотя бы один приём пищи' : 'Если приём включён для семьи, готовим одно общее блюдо на всех.') + '</p>' +
+    '<header class="page-head"><h1>Приёмы пищи по дням</h1>' +
+    '<p class="sub">Настрой каждый день отдельно: например, в среду завтрак нужен, а во вторник — нет.</p></header>' +
+    '<div class="meal-day-tabs" role="tablist" aria-label="День недели">' + tabs + '</div>' +
+    '<div class="meal-day-head"><b>' + CONFIG.days[dayIdx] + '</b><span>' + (dayCount ? dayCount + ' ' + pluralize(dayCount, ['приём', 'приёма', 'приёмов']) : 'день без готовки') + '</span></div>' +
+    section('self', 'ТЫ') +
+    section('family', 'СЕМЬЯ') +
+    '<div class="meal-presets">' +
+    '<button type="button" class="chip-action" data-action="meal-copy-all" data-day="' + dayIdx + '">Скопировать на всю неделю</button>' +
+    '<button type="button" class="chip-action" data-action="meal-copy-workdays" data-day="' + dayIdx + '">На будни</button>' +
+    '<button type="button" class="chip-action" data-action="meal-copy-weekend" data-day="' + dayIdx + '">На выходные</button>' +
+    '<button type="button" class="chip-action ghost" data-action="meal-clear-day" data-day="' + dayIdx + '">Очистить день</button>' +
+    '</div>' +
+    '<p class="footnote">' + (none ? '⚠️ Выбери хотя бы один приём пищи хотя бы на один день' : 'Один приём — либо для себя, либо на всех: отметка в одном разделе снимает другую. БЖУ считаем на одну порцию, закупка для семьи масштабируется.') + '</p>' +
     '</div>' +
     ctaBar(primaryBtn('Дальше', 'step-next', none)) +
     '</section>';
@@ -1495,30 +1916,38 @@ function renderWeek() {
   const ringColor = info.under ? '#2F9E63' : '#E96D3F';
   const store = getStore();
   const budgetLine = info.under
-    ? '<div class="budget-line ok">✅ Бюджет: ' + fmtMoney(state.budget) + '</div>'
+    ? '<div class="budget-line ok">✅ Бюджет: ' + fmtMoney(state.budget) + ' · остаток ' + fmtMoney(state.budget - info.cost) + '</div>'
     : '<div class="budget-line over">⚠️ Превышение: ' + fmtMoney(info.over) + '</div>';
+  const region = getRegion();
+  const regionThumb = region.photoThumb || 'assets/stores/orsk-thumb.jpg';
 
   const dayCards = info.days.map(function (d, i) {
     if (!d) return '';
     const meal = d.meals.length ? d.meals[d.meals.length - 1] : null;
     const isToday = i === todayIndex();
-    return '<button type="button" class="day-card' + (isToday ? ' today' : '') + '" data-action="open-day" data-day="' + i + '">' +
-      '<img class="day-photo" src="' + esc(meal ? meal.dish.image : 'assets/food/dishes/l_borsch.jpg') + '" alt="">' +
+    const empty = !d.meals.length;
+    return '<button type="button" class="day-card' + (isToday ? ' today' : '') + (empty ? ' empty' : '') + '" data-action="open-day" data-day="' + i + '">' +
+      '<img class="day-photo" src="' + esc(meal ? meal.dish.image : regionThumb) + '" alt="">' +
       '<span class="day-body">' +
       '<span class="day-title-row"><span class="day-title">' + CONFIG.days[i] + '</span>' +
       (isToday ? '<span class="today-badge">СЕГОДНЯ</span>' : '') + '</span>' +
-      '<span class="day-meals">' + (d.meals.length ? d.meals.map(function (m) { return CONFIG.meals[m.slot].lower; }).join(', ') : 'Нет подобранных блюд') + '</span>' +
+      '<span class="day-meals">' + (empty ? 'Свободный день · готовить не нужно' : d.meals.map(function (m) { return CONFIG.meals[m.slot].lower; }).join(', ')) + '</span>' +
+      (empty ? '' : '<span class="day-macros">' + Math.round(d.macros.kcal) + ' ккал · Б ' + Math.round(d.macros.p) + ' · Ж ' + Math.round(d.macros.f) + ' · У ' + Math.round(d.macros.c) + '</span>') +
       '</span>' +
-      '<span class="day-cost-wrap"><span class="day-cost">' + fmtMoney(d.cost) + '</span><span class="day-pp">' + d.perPortion + ' ₽/порц</span></span>' +
+      '<span class="day-cost-wrap"><span class="day-cost">' + (empty ? '—' : fmtMoney(d.cost)) + '</span><span class="day-pp">' + (empty ? 'без покупок' : d.perPortion + ' ₽/порц') + '</span></span>' +
       '</button>';
   }).join('');
-
   return '<section class="screen week-screen"><div class="screen-body">' +
     '<div class="week-head"><div><div class="eyebrow">ЛЁГКОСТЬ</div><h1>Твоя неделя</h1></div>' +
     '<div class="week-actions">' + profileButtonHTML() +
     '<button type="button" class="reset-link" data-action="reset">Сбросить</button></div></div>' +
-    '<p class="week-store">' + (store ? 'Меню для «' + esc(store.name) + '» · ' : '') + esc(getRegion().name) +
-    ' <button type="button" class="inline-link" data-action="open-map" data-back="week">на карте</button></p>' +
+    '<button type="button" class="week-place-card" data-action="open-map" data-back="week">' +
+    '<img src="' + esc(store && store.image ? store.image : regionThumb) + '" alt="' + esc(store ? store.name : region.name) + '">' +
+    '<span class="week-place-main"><b>' + esc(region.name) + '</b>' +
+    '<small>' + (store ? '«' + esc(store.name) + '» · ' + esc(store.address || 'магазин у дома') : 'Выбери магазин') + '</small>' +
+    (store && store.delivery ? '<span class="week-place-delivery">' + (store.delivery.service === 'Самовывоз' ? '🚶 ' : '🛵 ') + esc(store.delivery.service) + (store.delivery.eta !== store.delivery.service ? ' · ' + esc(store.delivery.eta) : '') + '</span>' : '') +
+    '</span><span class="week-place-arrow">Карта ›</span></button>' +
+    (priceSnapshotForRegion() ? '<p class="week-price-note">Цены: ' + esc(priceSnapshotForRegion().source) + ' · ' + esc(priceSnapshotForRegion().dateLabel) + '</p>' : '') +
     '<button type="button" class="shop-hero" data-action="open-shopping">' +
     '<span class="shop-hero-top"><span>🛒 ' + shop.count + ' ' + pluralPositions(shop.count) + '</span></span>' +
     '<span class="shop-hero-title">Открыть список покупок <span class="title-arrow">›</span></span>' +
@@ -1529,9 +1958,10 @@ function renderWeek() {
     '<div class="summary-ring">' + ringSVG(info.under ? info.cost / Math.max(1, state.budget) : 0.98, ringLabel, 'всего', 92, ringColor) + '</div>' +
     '<div class="summary-text">' +
     '<div class="summary-label">💰 Стоимость плана</div>' +
-    '<div class="summary-days">7 дней на ' + peopleCount() + ' ' + pluralPeople(peopleCount()) + ' · <span class="nowrap">' + fmtMoney(info.perPerson) + '</span></div>' +
+    '<div class="summary-days">' + peopleCount() + ' ' + pluralPeople(peopleCount()) + ' · <span class="nowrap">' + fmtMoney(info.perPerson) + ' ₽/чел.</span></div>' +
     budgetLine +
     '</div></div>' +
+    macroProgressHTML(info.macros, info.macroTargets, 'Среднее БЖУ за день', 'на порцию · цель ' + info.macroTargets.kcal + ' ккал') +
     '<div class="days-list">' + dayCards + '</div>' +
     '<p class="week-footnote">Нажми на день, чтобы посмотреть блюда и рецепты.</p>' +
     '</div></section>';
@@ -1542,11 +1972,11 @@ function renderDay() {
   const idx = clamp(parseInt(state.ui.dayId, 10) || 0, 0, 6);
   state.ui.dayId = idx;
   const d = dayInfo(idx);
-  const slots = activeSlots();
+  const slots = daySlots(idx);
   if (!d) { state.ui.screen = 'week'; return renderWeek(); }
   const mealSections = slots.map(function (slot) {
     const m = mealInfo(d.day, slot);
-    const family = isFamilySlot(slot);
+    const family = !!(m && m.family);
     const title = family ? CONFIG.meals[slot].familyTitle : CONFIG.meals[slot].selfTitle;
     if (!m) {
       return '<div class="slot-block"><div class="slot-title"><span class="slot-emoji">' + CONFIG.meals[slot].emoji + '</span><span>' + title + '</span></div>' +
@@ -1570,7 +2000,10 @@ function renderDay() {
     '<div class="day-total-value">' + fmtMoney(d.cost) + '</div>' +
     '<div class="hint">' + d.perPortion + ' ₽/порция · ' + d.meals.length + ' ' + pluralize(d.meals.length, ['приём', 'приёма', 'приёмов']) + ' пищи</div></div>' +
     '<div class="day-total-emoji">🥗</div></div>' +
+    (slots.length ? macroProgressHTML(d.macros, d.macroTargets, 'БЖУ за день', 'на одну взрослую порцию · цель ' + Math.round(d.macroTargets.kcal) + ' ккал') :
+      '<div class="empty-day-card"><span>🌿</span><b>Сегодня готовить не нужно</b><p>В этот день приёмы пищи выключены. Загляни в другой день или измени настройки.</p><button type="button" class="inline-link" data-action="edit-step" data-step="3">Настроить дни</button></div>') +
     mealSections +
+    (slots.length ? '<p class="week-footnote">БЖУ указано на одну порцию. Если блюдо готовится для семьи, порции одинаковые, а продукты масштабируются.</p>' : '') +
     '</div></section>';
 }
 
@@ -1580,6 +2013,19 @@ function renderShopping() {
   const total = shop.count;
   const checked = shop.checked;
   const ratio = total ? checked / total : 0;
+  const store = getStore();
+  const region = getRegion();
+  const snap = priceSnapshotForRegion();
+  const storeCard = store
+    ? '<button type="button" class="shopping-store-card" data-action="open-map" data-back="shopping">' +
+      (store.image ? '<img src="' + esc(store.image) + '" alt="' + esc(store.name) + '">' : '<span class="shopping-store-logo" style="background:' + store.color + '">' + esc(store.letter) + '</span>') +
+      '<span class="shopping-store-main"><b>' + esc(store.name) + '</b><small>' + esc(store.address || region.name) + '</small>' +
+      (store.delivery ? '<span>' + (store.delivery.service === 'Самовывоз' ? '🚶 ' : '🛵 ') + esc(store.delivery.service) + (store.delivery.eta !== store.delivery.service ? ' · ' + esc(store.delivery.eta) : '') + '</span>' : '') + '</span>' +
+      '<span class="shopping-store-go">сменить ›</span></button>'
+    : '';
+  const snapshotNote = snap
+    ? '<p class="shop-source-note">Цены: ' + esc(snap.source) + ' · ' + esc(snap.dateLabel) + '</p>'
+    : '';
   const groups = shop.groups.map(function (g) {
     const done = g.items.filter(function (it) { return state.shoppingChecked.indexOf(it.ing.id) !== -1; }).length;
     const rows = g.items.map(function (it) {
@@ -1599,14 +2045,16 @@ function renderShopping() {
   return '<section class="screen shopping-screen"><div class="screen-body">' +
     '<div class="day-head">' + backButton('back') + '</div>' +
     '<header class="page-head"><h1>Список покупок</h1></header>' +
+    storeCard + snapshotNote +
     '<div class="card shop-progress-card">' +
     '<div class="shop-progress-text"><div class="shop-progress-big" id="shop-progress-big">' + checked + ' из ' + total + '</div>' +
     '<p class="hint">Отмечай, что уже в корзине</p>' +
     '<div class="shop-total">Итого ≈ ' + fmtMoney(shop.total) + '</div></div>' +
     '<div id="shop-ring">' + ringSVG(ratio, Math.round(ratio * 100) + '%', 'готово', 88, '#2F9E63') + '</div>' +
     '</div>' +
+    (store && store.deliveryUrl ? '<a class="btn btn-secondary shop-delivery-btn" href="' + esc(store.deliveryUrl) + '" target="_blank" rel="noopener">Открыть ' + esc(store.name) + ' ↗</a>' : '') +
     groups +
-    '<p class="week-footnote">Цена списка может отличаться от плана на пару процентов из-за округлений.</p>' +
+    '<p class="week-footnote">Цена списка может отличаться от плана на пару процентов из-за округлений. Точную сумму и наличие проверяй в корзине доставки.</p>' +
     '</div></section>';
 }
 
@@ -1653,17 +2101,23 @@ function renderRecipeModal() {
     '<h1 class="recipe-title">' + esc(m.dish.name) + '</h1>' +
     '<div class="recipe-chips">' +
     '<span class="meta-chip">🕐 ' + m.dish.timeMin + ' мин</span>' +
+    (m.dish.difficulty ? '<span class="meta-chip">🎚️ ' + esc(m.dish.difficulty) + '</span>' : '') +
     '<span class="meta-chip">👥 ' + m.portions + ' ' + pluralPortions(m.portions) + '</span>' +
     '<span class="meta-chip accent">' + m.perPortion + ' ₽/порция</span>' +
     '</div>' +
     '<div class="macro-grid">' +
     '<div class="macro macro-kcal"><span class="macro-val">' + m.dish.macros.kcal + '</span><span class="macro-name">ккал</span></div>' +
     '<div class="macro macro-p"><span class="macro-val">' + m.dish.macros.p + ' г</span><span class="macro-name">белки</span></div>' +
-    '<div class="macro macro-c"><span class="macro-val">' + m.dish.macros.c + ' г</span><span class="macro-name">углеводы</span></div>' +
     '<div class="macro macro-f"><span class="macro-val">' + m.dish.macros.f + ' г</span><span class="macro-name">жиры</span></div>' +
+    '<div class="macro macro-c"><span class="macro-val">' + m.dish.macros.c + ' г</span><span class="macro-name">углеводы</span></div>' +
     '</div>' +
+    '<p class="recipe-macro-note">КБЖУ на одну порцию. При готовке на семью продукты умножаются, а порции остаются такими же.</p>' +
     '<div class="recipe-section"><div class="section-title">🛒 Ингредиенты</div><div class="ing-list">' + ings + '</div></div>' +
+    (m.dish.prep ? '<div class="recipe-section"><div class="section-title">👩‍🍳 Подготовка</div><p class="recipe-text">' + esc(m.dish.prep) + '</p></div>' : '') +
     '<div class="recipe-section"><div class="section-title">📋 Приготовление</div><div class="steps-list">' + steps + '</div></div>' +
+    (m.dish.doneness ? '<div class="recipe-callout done"><b>✓ Как проверить готовность</b><p>' + esc(m.dish.doneness) + '</p></div>' : '') +
+    (m.dish.tip ? '<div class="recipe-callout tip"><b>💡 Совет</b><p>' + esc(m.dish.tip) + '</p></div>' : '') +
+    (m.dish.serve ? '<div class="recipe-callout serve"><b>🍽️ Подача</b><p>' + esc(m.dish.serve) + '</p></div>' : '') +
     '</div>' +
     '<div class="modal-cta"><button type="button" class="btn btn-primary" data-action="replace-dish">🔄 Заменить блюдо</button></div>' +
     '</div></div>';
@@ -1735,14 +2189,14 @@ function goStep(step) {
 
 function nextStep() {
   if (state.step === 1 && !state.storeId) { toast('Сначала выбери магазин'); return; }
-  if (state.step === 3 && !activeSlots().length) { toast('Выбери хотя бы один приём пищи'); return; }
+  if (state.step === 3 && !hasAnyMeal()) { toast('Выбери хотя бы один приём пищи'); return; }
   if (state.step === 7) { startGeneration(); return; }
   goStep(state.step + 1);
 }
 
 function startGeneration() {
   if (!state.storeId) { goStep(1); return; }
-  if (!activeSlots().length) { toast('Выбери хотя бы один приём пищи'); goStep(3); return; }
+  if (!hasAnyMeal()) { toast('Выбери хотя бы один приём пищи'); goStep(3); return; }
   if (!hasAnyCandidates()) {
     state.plan = null;
     setScreen('empty');
@@ -1980,6 +2434,36 @@ function refreshShoppingUI() {
   });
 }
 
+/* ───────── НАСТРОЙКИ ПРИЁМОВ ПИЩИ ───────── */
+function copyMealDay(fromIdx, targets, message) {
+  const from = clamp(parseInt(fromIdx, 10) || 0, 0, 6);
+  const src = {};
+  CONFIG.mealOrder.forEach(function (slot) {
+    const m = state.dayMeals[from][slot];
+    src[slot] = { self: !!(m && m.self), family: !!(m && m.family) };
+  });
+  (targets || []).forEach(function (i) {
+    if (i < 0 || i > 6 || i === from) return;
+    CONFIG.mealOrder.forEach(function (slot) {
+      state.dayMeals[i][slot] = Object.assign({}, src[slot]);
+    });
+  });
+  saveState();
+  animateNext = false;
+  render();
+  toast(message || 'Настройки скопированы');
+}
+function clearMealDay(dayIdx) {
+  const d = clamp(parseInt(dayIdx, 10) || 0, 0, 6);
+  CONFIG.mealOrder.forEach(function (slot) {
+    state.dayMeals[d][slot] = { self: false, family: false };
+  });
+  saveState();
+  animateNext = false;
+  render();
+  toast(CONFIG.days[d] + ': день без готовки');
+}
+
 /* ───────── СОБЫТИЯ ───────── */
 function onClick(e) {
   const target = e.target.closest('[data-action]');
@@ -2039,6 +2523,20 @@ function onClick(e) {
     case 'open-history':
       openHistory();
       break;
+    case 'check-storage':
+      refreshStorageStats(true).then(function () { render(); });
+      break;
+    case 'export-data':
+      exportLocalBackup();
+      break;
+    case 'import-data': {
+      const input = document.getElementById('db-import');
+      if (input) input.click();
+      break;
+    }
+    case 'sync-prices':
+      syncPriceSnapshot(true);
+      break;
     case 'restore-plan':
       restorePlan(target.getAttribute('data-id'));
       break;
@@ -2062,6 +2560,7 @@ function onClick(e) {
       break;
     case 'map-back':
       if (state.ui.mapBack === 'week' && state.plan) setScreen('week');
+      else if (state.ui.mapBack === 'shopping' && state.plan) setScreen('shopping');
       else if (state.ui.mapBack === 'profile') openProfile();
       else goStep(1);
       break;
@@ -2070,6 +2569,7 @@ function onClick(e) {
       saveState();
       toast('Магазин выбран — цены обновлены');
       if (state.ui.mapBack === 'week' && state.plan) setScreen('week');
+      else if (state.ui.mapBack === 'shopping' && state.plan) setScreen('shopping');
       else if (state.ui.mapBack === 'profile') openProfile();
       else goStep(1);
       break;
@@ -2127,14 +2627,41 @@ function onClick(e) {
       }
       break;
     case 'meal-toggle': {
+      const dayIdx = clamp(parseInt(target.getAttribute('data-day'), 10) || state.ui.mealDay || 0, 0, 6);
       const slot = target.getAttribute('data-slot');
       const kind = target.getAttribute('data-kind');
-      if (state.meals[slot] && (kind === 'self' || kind === 'family')) {
-        state.meals[slot][kind] = !state.meals[slot][kind];
+      const setting = state.dayMeals[dayIdx] && state.dayMeals[dayIdx][slot];
+      if (setting && (kind === 'self' || kind === 'family')) {
+        if (kind === 'family') {
+          setting.family = !setting.family;
+          if (setting.family) setting.self = false;
+        } else {
+          setting.self = !setting.self;
+          if (setting.self) setting.family = false;
+        }
         animateNext = false; saveState(); render();
       }
       break;
     }
+    case 'meal-day': {
+      state.ui.mealDay = clamp(parseInt(target.getAttribute('data-day'), 10) || 0, 0, 6);
+      animateNext = false;
+      saveState();
+      render();
+      break;
+    }
+    case 'meal-copy-all':
+      copyMealDay(parseInt(target.getAttribute('data-day'), 10), [0, 1, 2, 3, 4, 5, 6], 'Настройки скопированы на всю неделю');
+      break;
+    case 'meal-copy-workdays':
+      copyMealDay(parseInt(target.getAttribute('data-day'), 10), [0, 1, 2, 3, 4], 'Настройки скопированы на будни');
+      break;
+    case 'meal-copy-weekend':
+      copyMealDay(parseInt(target.getAttribute('data-day'), 10), [5, 6], 'Настройки скопированы на выходные');
+      break;
+    case 'meal-clear-day':
+      clearMealDay(parseInt(target.getAttribute('data-day'), 10));
+      break;
     case 'allergy-toggle': {
       const id = target.getAttribute('data-id');
       if (id === 'none') {
@@ -2201,8 +2728,10 @@ function onClick(e) {
     case 'reset':
       if (window.confirm('Сбросить весь прогресс и вернуться в начало?')) {
         clearTimers();
-        localStorage.removeItem(STORAGE_KEY);
-        localStorage.removeItem(PLAN_KEY);
+        try {
+          localStorage.removeItem(stateKey(currentUser ? currentUser.id : null));
+          localStorage.removeItem(planKey(currentUser ? currentUser.id : null));
+        } catch (e) {}
         state = makeDefaultState();
         modalOpen = false;
         lastScreen = null;
@@ -2238,6 +2767,12 @@ function onSubmit(e) {
 
 function onInput(e) {
   const el = e.target;
+  if (el.id === 'db-import') {
+    const file = el.files && el.files[0];
+    el.value = '';
+    importBackupFile(file);
+    return;
+  }
   if (el.id === 'store-search') {
     filterStores(el.value);
     return;
@@ -2264,7 +2799,12 @@ async function init() {
   document.addEventListener('change', onInput);
   document.addEventListener('submit', onSubmit);
   document.addEventListener('keydown', onKeydown);
-  try { await openDB(); } catch (e) { /* гостевой режим останется доступен */ }
+  try {
+    await openDB();
+    await migrateFallbackToIndexedDB();
+  } catch (e) { /* работает резервное localStorage-хранилище */ }
+  await refreshStorageStats();
+  await loadPriceSnapshot();
 
   const session = readSession();
   if (session && session.userId) {

@@ -232,3 +232,51 @@
 - Лицензия: CC BY 2.0
 - Источник: https://commons.wikimedia.org/wiki/File:Vegan_Potato_Pancakes_and_Raspberry_Apple_Sauce_(4164551281).jpg
 - Используется: b_pancakes
+
+## Фотографии магазинов и Орска
+
+## Pyaterochka store entrance in Chelyabinsk.jpg
+
+- Автор: Sokolikmawwer0
+- Лицензия: CC BY-SA 3.0
+- Источник: https://commons.wikimedia.org/wiki/File:Pyaterochka_store_entrance_in_Chelyabinsk.jpg
+- Используется: assets/stores/pyaterochka.jpg
+
+## 2025-02-24 - The Magnit shop in Zagoryansky.jpg
+
+- Лицензия: CC0
+- Источник: https://commons.wikimedia.org/wiki/File:2025-02-24_-_The_Magnit_shop_in_Zagoryansky.jpg
+- Используется: assets/stores/magnit.jpg
+
+## Moscow, Lenta Hypermarket Mar.2025 - bread 01.jpg
+
+- Автор: Retired electrician
+- Лицензия: CC0
+- Источник: https://commons.wikimedia.org/wiki/File:Moscow,_Lenta_Hypermarket_Mar.2025_-_bread_01.jpg
+- Используется: assets/stores/lenta.jpg
+
+## Svetofor store 01.jpg
+
+- Автор: Stolbovsky
+- Лицензия: CC BY-SA 3.0
+- Источник: https://commons.wikimedia.org/wiki/File:Svetofor_store_01.jpg
+- Используется: assets/stores/svetofor.jpg
+
+## Moscow, Vavilova Street, Yandex.Eda courier, Aug 2025 01.jpg
+
+- Лицензия: CC0
+- Источник: https://commons.wikimedia.org/wiki/File:Moscow,_Vavilova_Street,_Yandex.Eda_courier,_Aug_2025_01.jpg
+- Используется: assets/stores/yandex-eda.jpg
+
+## Moscow, Sadovnicheskaya 42, Kuper courier on a monowheel, Sept 2025 05.jpg
+
+- Лицензия: CC0
+- Источник: https://commons.wikimedia.org/wiki/File:Moscow,_Sadovnicheskaya_42,_Kuper_courier_on_a_monowheel,_Sept_2025_05.jpg
+- Используется: assets/stores/kuper.jpg
+
+## Orsk from viewpoint 05.jpg
+
+- Автор: Stolbovsky
+- Лицензия: CC BY-SA 3.0
+- Источник: https://commons.wikimedia.org/wiki/File:Orsk_from_viewpoint_05.jpg
+- Используется: assets/stores/orsk.jpg, assets/stores/orsk-thumb.jpg

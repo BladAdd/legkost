@@ -2,13 +2,57 @@
    Все цены базовые, ₽ за кг или за штуку. Коэффициент магазина применяется в app.js. */
 
 const STORES = [
-  { id: 'pyaterochka', name: 'Пятёрочка', letter: 'П', color: '#E8453C', slogan: 'У дома · низкие цены', coef: 0.98 },
-  { id: 'magnit',      name: 'Магнит',     letter: 'М', color: '#D6001C', slogan: 'У дома · низкие цены', coef: 0.97 },
+  {
+    id: 'pyaterochka', name: 'Пятёрочка', letter: 'П', color: '#E8453C',
+    slogan: 'У дома · низкие цены', coef: 0.98,
+    image: 'assets/stores/pyaterochka.jpg', address: 'пр. Ленина, 44', branches: 39,
+    delivery: { service: 'Купер · Яндекс Еда', eta: '30–60 мин', fee: 99, min: 500, freeFrom: 1500 },
+    deliveryUrl: 'https://eda.yandex.ru/Orsk/retail', siteUrl: 'https://5ka.ru/',
+    note: 'Ближайшие магазины — в шаговой доступности. Доставка от 30 минут.'
+  },
+  {
+    id: 'magnit', name: 'Магнит', letter: 'М', color: '#D6001C',
+    slogan: 'У дома · низкие цены', coef: 0.97,
+    image: 'assets/stores/magnit.jpg', address: 'пр. Ленина, 19', branches: 49,
+    delivery: { service: 'Магнит Доставка · Купер', eta: '35–70 мин', fee: 0, min: 1000, freeFrom: 1000 },
+    deliveryUrl: 'https://magnit.ru/', siteUrl: 'https://magnit.ru/',
+    note: 'Самая широкая сеть в Орске: 49 адресов и доставка на дом.'
+  },
+  {
+    id: 'lenta', name: 'Лента', letter: 'Л', color: '#0057A8',
+    slogan: 'Гипермаркет · закупка', coef: 1.00,
+    image: 'assets/stores/lenta.jpg', address: 'пр. Ленина, 168', branches: 1,
+    delivery: { service: 'Лента Онлайн · Яндекс Еда', eta: '60–120 мин', fee: 149, min: 1500, freeFrom: 3000 },
+    deliveryUrl: 'https://lenta.com/cities/orsk/0167/', siteUrl: 'https://lenta.com/cities/orsk/0167/',
+    note: 'Большая закупка на неделю, свежая выпечка и широкая полка.'
+  },
+  {
+    id: 'svetofor', name: 'Светофор', letter: 'С', color: '#69A93C',
+    slogan: 'Дискаунтер · крупная фасовка', coef: 0.88,
+    image: 'assets/stores/svetofor.jpg', address: 'ул. Макаренко, 20Б', branches: 5,
+    delivery: { service: 'Самовывоз', eta: 'самовывоз', fee: 0, min: 0, freeFrom: 0 },
+    deliveryUrl: 'https://2gis.ru/orsk/search/%D1%81%D0%B2%D0%B5%D1%82%D0%BE%D1%84%D0%BE%D1%80', siteUrl: 'https://2gis.ru/orsk/search/%D1%81%D0%B2%D0%B5%D1%82%D0%BE%D1%84%D0%BE%D1%80',
+    note: 'Крупные упаковки и базовые продукты — выгодно для семьи.'
+  },
+  {
+    id: 'yandex_eda', name: 'Яндекс Еда', letter: 'Я', color: '#FC3F1D',
+    slogan: 'Маркетплейс · доставка из магазинов', coef: 1.04, kind: 'service',
+    image: 'assets/stores/yandex-eda.jpg', address: 'Орск и пригород', branches: null,
+    delivery: { service: 'Яндекс Еда', eta: '20–60 мин', fee: 0, min: 0, freeFrom: 0 },
+    deliveryUrl: 'https://eda.yandex.ru/Orsk/retail', siteUrl: 'https://eda.yandex.ru/Orsk/retail',
+    note: 'Собирает заказ из Пятёрочки, Ленты и других магазинов Орска.'
+  },
+  {
+    id: 'kuper', name: 'Купер', letter: 'К', color: '#00A87E',
+    slogan: 'Маркетплейс · продукты за 30 минут', coef: 1.00, kind: 'service',
+    image: 'assets/stores/kuper.jpg', address: 'Орск и пригород', branches: null,
+    delivery: { service: 'Купер', eta: '30–60 мин', fee: 0, min: 500, freeFrom: 1000 },
+    deliveryUrl: 'https://web.kuper.ru/', siteUrl: 'https://web.kuper.ru/',
+    note: 'Доставка из Пятёрочки и Магнита по адресу в Орске.'
+  },
   { id: 'dixy',        name: 'Дикси',      letter: 'Д', color: '#EF7D22', slogan: 'У дома · рядом',       coef: 1.00 },
   { id: 'chizhik',     name: 'Чижик',      letter: 'Ч', color: '#E8B400', slogan: 'Дискаунтер · базовое', coef: 0.92 },
-  { id: 'svetofor',    name: 'Светофор',   letter: 'С', color: '#69A93C', slogan: 'Дискаунтер · крупная фасовка', coef: 0.88 },
   { id: 'perekrestok', name: 'Перекрёсток',letter: 'П', color: '#2C7A3F', slogan: 'Средние цены · выбор', coef: 1.05 },
-  { id: 'lenta',       name: 'Лента',      letter: 'Л', color: '#0057A8', slogan: 'Гипермаркет · закупка', coef: 1.00 },
   { id: 'auchan',      name: 'Ашан',       letter: 'А', color: '#E30613', slogan: 'Гипермаркет · оптом', coef: 1.03 },
   { id: 'metro',       name: 'Метро',      letter: 'M', color: '#003B71', slogan: 'Мелкий опт · большие упаковки', coef: 0.95 },
   { id: 'vkusvill',    name: 'ВкусВилл',   letter: 'В', color: '#4CAF50', slogan: 'Своё производство',   coef: 1.15 }
@@ -17,6 +61,17 @@ const STORES = [
 /* Регионы: доступные магазины и поправка к ценам.
    center = [широта, долгота] — используется для карты Яндекс.Карт. */
 const REGIONS = [
+  {
+    id: 'orsk', name: 'Орск', area: 'Оренбургская область',
+    center: [51.2292, 58.4752], zoom: 12, priceCoef: 1.00,
+    photo: 'assets/stores/orsk.jpg', photoThumb: 'assets/stores/orsk-thumb.jpg',
+    storeIds: ['pyaterochka', 'magnit', 'lenta', 'svetofor', 'yandex_eda', 'kuper'],
+    storeCoefs: { pyaterochka: 1.00, magnit: 0.99, lenta: 1.015, svetofor: 0.96, yandex_eda: 1.07, kuper: 1.04 },
+    note: 'домашний регион · локальные цены',
+    description: 'Орск — наш основной город. Пятёрочка и Магнит на каждой улице, Лента — для большой закупки, Светофор — за крупной фасовкой. Доставка — через Купер и Яндекс Еду.',
+    highlights: ['39 Пятёрочек', '49 Магнитов', 'доставка от 30 мин', 'локальный снимок цен'],
+    priceSnapshot: true
+  },
   {
     id: 'moscow', name: 'Москва', area: 'Москва и область',
     center: [55.7558, 37.6173], zoom: 10, priceCoef: 1.00,
@@ -96,6 +151,33 @@ const REGIONS = [
   }
 ];
 
+/* Снимок цен Орска. Это не «живой» API: цены собраны по витринам магазинов
+   и сервисов доставки на указанную дату. Файл data/prices-orsk.json позволяет
+   обновлять снимок без правки кода — приложение загрузит его при старте. */
+let ORSK_PRICE_SNAPSHOT = {
+  regionId: 'orsk',
+  updatedAt: '2026-10-22T09:00:00+05:00',
+  dateLabel: '22 октября 2026',
+  source: 'Снимок витрин Яндекс.Еды, Купера и магазинов Орска',
+  sourceUrl: 'https://eda.yandex.ru/Orsk/retail',
+  disclaimer: 'Цены ориентировочные и могут отличаться от приложения доставки. Перед заказом проверь корзину.',
+  ingredients: {
+    chicken_fillet: 459, turkey: 529, pork: 349, beef: 529, liver: 229, minced_chicken: 399,
+    salmon: 1190, cod: 599, pollock: 349, shrimp: 1190,
+    egg: 13, cottage_cheese: 379, yogurt: 269, milk: 89, kefir: 99, cheese: 649,
+    butter: 999, sour_cream: 299, cream: 399,
+    potato: 39, onion: 29, carrot: 39, zucchini: 69, pumpkin: 49, broccoli: 239,
+    tomato: 199, cucumber: 129, pepper: 219, cabbage: 35, beet: 49, eggplant: 159,
+    mushrooms: 219, greens: 499, cilantro: 499, garlic: 199, avocado: 89, olives: 899,
+    spinach: 349, green_peas: 129, corn: 149, celery: 149, beans: 119,
+    banana: 89, apple: 99, berries: 349, orange: 149, lemon: 169, pear: 149,
+    rice: 99, buckwheat: 79, oatmeal: 69, millet: 59, oat_flour: 129, flour: 55,
+    pasta: 99, pearl_barley: 49, bread: 90, lavash: 35,
+    sweetener: 3, spices: 690, soy_sauce: 399, tofu: 399, sesame: 590,
+    honey: 499, nuts: 990, peanut: 649, oil: 159, cocoa: 699
+  }
+};
+
 /* allergens: nuts | peanut | milk | egg | gluten | fish | seafood | soy | honey | citrus | sesame */
 const INGREDIENTS = [
   { id: 'chicken_fillet', name: 'Куриное филе', emoji: '🍗', category: 'meat', unit: 'kg', pricePerUnit: 1274, allergens: [], syn: ['курица', 'куриц', 'куриное'] },
@@ -158,7 +240,7 @@ const INGREDIENTS = [
   { id: 'flour', name: 'Мука пшеничная', emoji: '🌾', category: 'grain', unit: 'kg', pricePerUnit: 65, allergens: ['gluten'], syn: ['мука'] },
   { id: 'pasta', name: 'Макароны', emoji: '🍝', category: 'grain', unit: 'kg', pricePerUnit: 119, allergens: ['gluten'], syn: ['макарон', 'паст'] },
   { id: 'pearl_barley', name: 'Перловка', emoji: '🌾', category: 'grain', unit: 'kg', pricePerUnit: 59, allergens: ['gluten'], syn: ['перлов'] },
-  { id: 'bread', name: 'Хлеб', emoji: '🍞', category: 'bread', unit: 'pc', pricePerUnit: 49, allergens: ['gluten'], syn: ['хлеб'] },
+  { id: 'bread', name: 'Хлеб', emoji: '🍞', category: 'bread', unit: 'kg', pricePerUnit: 90, allergens: ['gluten'], syn: ['хлеб'] },
   { id: 'lavash', name: 'Лаваш', emoji: '🫓', category: 'bread', unit: 'pc', pricePerUnit: 39, allergens: ['gluten'], syn: ['лаваш'] },
 
   { id: 'sweetener', name: 'Сахарозаменитель', emoji: '🍬', category: 'other', unit: 'pc', pricePerUnit: 4, allergens: [], syn: ['сахарозам'] },
@@ -179,7 +261,7 @@ const DISHES = [
     id: 'b_salmon_toast', slot: 'breakfast', name: 'Бутерброд с лососем и яйцом', emoji: '🥪', gradient: 'linear-gradient(135deg,#F9D6B8,#E96D3F)',
     timeMin: 10, appliances: ['stove'], tier: 3,
     ingredients: [
-      { ingId: 'bread', qtyPerServing: 2, unit: 'pc' },
+      { ingId: 'bread', qtyPerServing: 60, unit: 'kg' },
       { ingId: 'salmon', qtyPerServing: 35, unit: 'kg' },
       { ingId: 'egg', qtyPerServing: 1, unit: 'pc' },
       { ingId: 'avocado', qtyPerServing: 0.25, unit: 'pc' },
@@ -220,7 +302,7 @@ const DISHES = [
     ingredients: [
       { ingId: 'oatmeal', qtyPerServing: 60, unit: 'kg' },
       { ingId: 'milk', qtyPerServing: 150, unit: 'kg' },
-      { ingId: 'banana', qtyPerServing: 0.5, unit: 'pc' },
+      { ingId: 'banana', qtyPerServing: 60, unit: 'kg' },
       { ingId: 'nuts', qtyPerServing: 10, unit: 'kg' },
       { ingId: 'honey', qtyPerServing: 5, unit: 'kg' },
       { ingId: 'butter', qtyPerServing: 5, unit: 'kg' }
@@ -294,7 +376,7 @@ const DISHES = [
     id: 'b_toast_cheese', slot: 'breakfast', name: 'Тосты с сыром и томатами', emoji: '🍞', gradient: 'linear-gradient(135deg,#F4D9C4,#C26A45)',
     timeMin: 8, appliances: ['microwave'], tier: 1,
     ingredients: [
-      { ingId: 'bread', qtyPerServing: 2, unit: 'pc' },
+      { ingId: 'bread', qtyPerServing: 60, unit: 'kg' },
       { ingId: 'cheese', qtyPerServing: 30, unit: 'kg' },
       { ingId: 'tomato', qtyPerServing: 60, unit: 'kg' },
       { ingId: 'butter', qtyPerServing: 5, unit: 'kg' },
@@ -349,7 +431,7 @@ const DISHES = [
     timeMin: 5, appliances: ['blender'], tier: 1,
     ingredients: [
       { ingId: 'cottage_cheese', qtyPerServing: 160, unit: 'kg' },
-      { ingId: 'banana', qtyPerServing: 0.5, unit: 'pc' },
+      { ingId: 'banana', qtyPerServing: 60, unit: 'kg' },
       { ingId: 'yogurt', qtyPerServing: 40, unit: 'kg' },
       { ingId: 'cocoa', qtyPerServing: 3, unit: 'kg' },
       { ingId: 'honey', qtyPerServing: 5, unit: 'kg' }
@@ -366,7 +448,7 @@ const DISHES = [
     id: 'b_avocado_egg', slot: 'breakfast', name: 'Авокадо-тост с яйцом пашот', emoji: '🥑', gradient: 'linear-gradient(135deg,#F1E3CD,#B9825C)',
     timeMin: 15, appliances: ['stove'], tier: 2,
     ingredients: [
-      { ingId: 'bread', qtyPerServing: 2, unit: 'pc' },
+      { ingId: 'bread', qtyPerServing: 60, unit: 'kg' },
       { ingId: 'avocado', qtyPerServing: 0.4, unit: 'pc' },
       { ingId: 'egg', qtyPerServing: 1, unit: 'pc' },
       { ingId: 'lemon', qtyPerServing: 5, unit: 'kg' },
@@ -389,7 +471,7 @@ const DISHES = [
       { ingId: 'oat_flour', qtyPerServing: 50, unit: 'kg' },
       { ingId: 'egg', qtyPerServing: 1, unit: 'pc' },
       { ingId: 'milk', qtyPerServing: 80, unit: 'kg' },
-      { ingId: 'apple', qtyPerServing: 0.5, unit: 'pc' },
+      { ingId: 'apple', qtyPerServing: 90, unit: 'kg' },
       { ingId: 'oil', qtyPerServing: 3, unit: 'kg' },
       { ingId: 'honey', qtyPerServing: 5, unit: 'kg' }
     ],
@@ -516,7 +598,7 @@ const DISHES = [
     ingredients: [
       { ingId: 'pollock', qtyPerServing: 160, unit: 'kg' },
       { ingId: 'egg', qtyPerServing: 0.5, unit: 'pc' },
-      { ingId: 'bread', qtyPerServing: 0.5, unit: 'pc' },
+      { ingId: 'bread', qtyPerServing: 15, unit: 'kg' },
       { ingId: 'potato', qtyPerServing: 180, unit: 'kg' },
       { ingId: 'milk', qtyPerServing: 40, unit: 'kg' },
       { ingId: 'butter', qtyPerServing: 8, unit: 'kg' },
@@ -681,7 +763,7 @@ const DISHES = [
       { ingId: 'minced_chicken', qtyPerServing: 150, unit: 'kg' },
       { ingId: 'mushrooms', qtyPerServing: 100, unit: 'kg' },
       { ingId: 'egg', qtyPerServing: 0.5, unit: 'pc' },
-      { ingId: 'bread', qtyPerServing: 0.5, unit: 'pc' },
+      { ingId: 'bread', qtyPerServing: 15, unit: 'kg' },
       { ingId: 'buckwheat', qtyPerServing: 65, unit: 'kg' },
       { ingId: 'onion', qtyPerServing: 30, unit: 'kg' },
       { ingId: 'oil', qtyPerServing: 5, unit: 'kg' }
@@ -838,7 +920,7 @@ const DISHES = [
       { ingId: 'cottage_cheese', qtyPerServing: 180, unit: 'kg' },
       { ingId: 'egg', qtyPerServing: 0.5, unit: 'pc' },
       { ingId: 'oat_flour', qtyPerServing: 25, unit: 'kg' },
-      { ingId: 'apple', qtyPerServing: 0.5, unit: 'pc' },
+      { ingId: 'apple', qtyPerServing: 90, unit: 'kg' },
       { ingId: 'honey', qtyPerServing: 5, unit: 'kg' },
       { ingId: 'butter', qtyPerServing: 3, unit: 'kg' }
     ],

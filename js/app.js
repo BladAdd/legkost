@@ -67,11 +67,21 @@ const CONFIG = {
     { emoji: '🔄', text: 'Не понравилось блюдо? Заменим в одно касание' },
     { emoji: '💡', text: 'План собран под цены выбранного магазина' }
   ],
-  screens: ['onboarding', 'loading', 'dashboard', 'week', 'day', 'shopping', 'empty']
+  avatars: [
+    'assets/avatars/avatar-1.jpg',
+    'assets/avatars/avatar-2.jpg',
+    'assets/avatars/avatar-3.jpg',
+    'assets/avatars/avatar-4.jpg',
+    'assets/avatars/avatar-5.jpg',
+    'assets/avatars/avatar-6.jpg'
+  ],
+  screens: ['auth', 'register', 'login', 'onboarding', 'loading', 'dashboard', 'week', 'day', 'shopping', 'empty', 'profile', 'profile-edit', 'history', 'region', 'map']
 };
 
 const STORAGE_KEY = 'legkost.state.v1';
 const PLAN_KEY = 'legkost.plan.v1';
+const SESSION_KEY = 'legkost.session.v1';
+const GUEST_KEY = 'legkost.guest.v1';
 const ING = {};
 INGREDIENTS.forEach(function (i) { ING[i.id] = i; });
 const DISH = {};
@@ -140,6 +150,7 @@ function pluralDays(n) { return pluralize(n, ['день', 'дня', 'дней'])
 function makeDefaultState() {
   return {
     step: 1,
+    regionId: 'moscow',
     storeId: null,
     adults: CONFIG.defaultAdults,
     childrenAges: [],
@@ -154,7 +165,7 @@ function makeDefaultState() {
     appliances: CONFIG.defaultAppliances.slice(),
     plan: null,
     shoppingChecked: [],
-    ui: { screen: 'onboarding', dayId: 0, dishId: null, slot: null }
+    ui: { screen: 'onboarding', dayId: 0, dishId: null, slot: null, mapBack: 'onboarding', profileBack: 'week', regionBack: 'onboarding' }
   };
 }
 
@@ -162,7 +173,9 @@ function normalizeState(raw) {
   const d = makeDefaultState();
   if (!raw || typeof raw !== 'object') return d;
   d.step = clamp(parseInt(raw.step, 10) || 1, 1, 7);
-  d.storeId = STORES.some(function (s) { return s.id === raw.storeId; }) ? raw.storeId : null;
+  d.regionId = REGIONS.some(function (r) { return r.id === raw.regionId; }) ? raw.regionId : 'moscow';
+  const regionStoreIds = (REGIONS.find(function (r) { return r.id === d.regionId; }) || REGIONS[0]).storeIds;
+  d.storeId = regionStoreIds.indexOf(raw.storeId) !== -1 ? raw.storeId : null;
   d.adults = clamp(parseInt(raw.adults, 10) || CONFIG.defaultAdults, 1, CONFIG.adultsMax);
   d.childrenAges = Array.isArray(raw.childrenAges)
     ? raw.childrenAges.slice(0, CONFIG.kidsMax).map(function (a) { return clamp(parseInt(a, 10) || 7, CONFIG.ageMin, CONFIG.ageMax); })
@@ -195,6 +208,9 @@ function normalizeState(raw) {
     d.ui.dayId = clamp(parseInt(raw.ui.dayId, 10) || 0, 0, 6);
     d.ui.dishId = typeof raw.ui.dishId === 'string' ? raw.ui.dishId : null;
     d.ui.slot = CONFIG.mealOrder.indexOf(raw.ui.slot) !== -1 ? raw.ui.slot : null;
+    d.ui.mapBack = ['onboarding', 'week', 'profile'].indexOf(raw.ui.mapBack) !== -1 ? raw.ui.mapBack : 'onboarding';
+    d.ui.profileBack = ['week', 'onboarding', 'day', 'shopping'].indexOf(raw.ui.profileBack) !== -1 ? raw.ui.profileBack : 'week';
+    d.ui.regionBack = ['onboarding', 'profile', 'week', 'map'].indexOf(raw.ui.regionBack) !== -1 ? raw.ui.regionBack : 'onboarding';
   }
   return d;
 }
@@ -210,14 +226,23 @@ function isValidPlan(p) {
   });
 }
 
-function loadState() {
+function stateKey(userId) { return STORAGE_KEY + '.' + (userId || 'guest'); }
+function planKey(userId) { return PLAN_KEY + '.' + (userId || 'guest'); }
+
+function loadStateFor(userId) {
   let raw = null;
   let plan = null;
   try {
-    const saved = localStorage.getItem(STORAGE_KEY);
+    const saved = localStorage.getItem(stateKey(userId));
     if (saved) raw = JSON.parse(saved);
-    const savedPlan = localStorage.getItem(PLAN_KEY);
+    const savedPlan = localStorage.getItem(planKey(userId));
     if (savedPlan) plan = JSON.parse(savedPlan);
+    if (!userId && !saved) {
+      const legacy = localStorage.getItem(STORAGE_KEY);
+      if (legacy) raw = JSON.parse(legacy);
+      const legacyPlan = localStorage.getItem(PLAN_KEY);
+      if (legacyPlan) plan = JSON.parse(legacyPlan);
+    }
   } catch (e) { raw = null; plan = null; }
   const s = normalizeState(raw);
   if (isValidPlan(plan)) s.plan = plan;
@@ -234,7 +259,12 @@ function loadState() {
   return s;
 }
 
-let state = loadState();
+let currentUser = null;
+let currentProfile = null;
+let profilePlans = [];
+let authError = '';
+let authBusy = false;
+let state = loadStateFor(null);
 let lastScreen = null;
 let modalOpen = false;
 let timers = [];
@@ -244,14 +274,444 @@ let toastTimer = null;
 function saveState() {
   try {
     const snap = JSON.parse(JSON.stringify(state));
-    if (snap.ui.screen === 'loading' || snap.ui.screen === 'dashboard' || snap.ui.screen === 'empty') {
+    if (['loading', 'dashboard', 'empty', 'auth', 'register', 'login'].indexOf(snap.ui.screen) !== -1) {
       snap.ui.screen = snap.plan ? 'week' : 'onboarding';
     }
     if (!snap.plan && snap.ui.screen !== 'onboarding') snap.ui.screen = 'onboarding';
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(snap));
-    if (state.plan) localStorage.setItem(PLAN_KEY, JSON.stringify(state.plan));
-    else localStorage.removeItem(PLAN_KEY);
+    localStorage.setItem(stateKey(currentUser ? currentUser.id : null), JSON.stringify(snap));
+    if (state.plan) localStorage.setItem(planKey(currentUser ? currentUser.id : null), JSON.stringify(state.plan));
+    else localStorage.removeItem(planKey(currentUser ? currentUser.id : null));
   } catch (e) { /* localStorage может быть недоступен — приложение продолжает работать */ }
+}
+
+/* ───────── ЛОКАЛЬНЫЕ АККАУНТЫ ───────── */
+function readSession() {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) { return null; }
+}
+function writeSession(userId) {
+  try { localStorage.setItem(SESSION_KEY, JSON.stringify({ userId: userId, at: Date.now() })); } catch (e) {}
+}
+function clearSession() {
+  try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
+}
+function profileInitials(name) {
+  const parts = String(name || 'Л').trim().split(/\s+/).filter(Boolean);
+  return (parts[0] || 'Л').charAt(0).toUpperCase() + (parts[1] ? parts[1].charAt(0).toUpperCase() : '');
+}
+function avatarHTML(profile, cls, alt) {
+  const src = profile && profile.avatar && CONFIG.avatars.indexOf(profile.avatar) !== -1 ? profile.avatar : null;
+  if (src) {
+    return '<img class="avatar ' + (cls || '') + '" src="' + esc(src) + '" alt="' + esc(alt || 'Аватар') + '">';
+  }
+  return '<span class="avatar avatar-initials ' + (cls || '') + '" aria-hidden="true">' + esc(profileInitials(profile && profile.name)) + '</span>';
+}
+function profileButtonHTML() {
+  if (!currentUser) {
+    return '<button type="button" class="auth-pill" data-action="open-auth">Войти</button>';
+  }
+  return '<button type="button" class="avatar-btn" data-action="open-profile" aria-label="Открыть профиль">' +
+    avatarHTML(currentProfile, 'avatar-sm', 'Профиль') + '</button>';
+}
+function defaultProfileFor(user) {
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    avatar: CONFIG.avatars[0],
+    regionId: state.regionId || 'moscow',
+    createdAt: user.createdAt || Date.now(),
+    plansCount: 0,
+    replacedCount: 0
+  };
+}
+async function persistProfile() {
+  if (!currentProfile) return;
+  try { await dbPut('profiles', currentProfile); } catch (e) {}
+}
+async function loadProfilePlans() {
+  profilePlans = [];
+  if (!currentUser) return;
+  try {
+    const list = await dbGetAllByIndex('plans', 'userId', currentUser.id);
+    profilePlans = (list || []).sort(function (a, b) { return b.createdAt - a.createdAt; });
+  } catch (e) { profilePlans = []; }
+}
+function formatProfileDate(ts) {
+  if (!ts) return '';
+  try {
+    return new Date(ts).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
+  } catch (e) { return ''; }
+}
+function planSnapshotForHistory() {
+  const info = planInfo();
+  if (!info || !state.plan || !currentUser) return null;
+  return {
+    userId: currentUser.id,
+    createdAt: Date.now(),
+    cost: info.cost,
+    people: peopleCount(),
+    regionId: state.regionId,
+    storeId: state.storeId,
+    budget: state.budget,
+    settings: {
+      adults: state.adults,
+      childrenAges: state.childrenAges.slice(),
+      meals: JSON.parse(JSON.stringify(state.meals)),
+      budget: state.budget,
+      allergies: state.allergies.slice(),
+      stop: state.stop.slice(),
+      appliances: state.appliances.slice(),
+      regionId: state.regionId,
+      storeId: state.storeId
+    },
+    plan: JSON.parse(JSON.stringify(state.plan)),
+    shoppingChecked: state.shoppingChecked.slice()
+  };
+}
+async function savePlanToHistory() {
+  if (!currentUser) return;
+  const snap = planSnapshotForHistory();
+  if (!snap) return;
+  try {
+    await dbAdd('plans', snap);
+    currentProfile.plansCount = (currentProfile.plansCount || 0) + 1;
+    await persistProfile();
+    await loadProfilePlans();
+  } catch (e) { /* история не должна мешать генерации */ }
+}
+function recordReplacement() {
+  if (!currentProfile) return;
+  currentProfile.replacedCount = (currentProfile.replacedCount || 0) + 1;
+  persistProfile();
+}
+
+/* ───────── АУТЕНТИФИКАЦИЯ ───────── */
+const authDraft = { name: '', email: '', regionId: '' };
+let profileAvatarDraft = CONFIG.avatars[0];
+
+function showAuth(screen) {
+  authError = '';
+  state.ui.screen = screen || 'auth';
+  animateNext = true;
+  render();
+  window.scrollTo({ top: 0, behavior: 'auto' });
+}
+function enterGuest() {
+  currentUser = null;
+  currentProfile = null;
+  profilePlans = [];
+  clearSession();
+  try { localStorage.setItem(GUEST_KEY, '1'); } catch (e) {}
+  state = loadStateFor(null);
+  state.ui.screen = state.plan ? 'week' : 'onboarding';
+  render();
+  window.scrollTo({ top: 0, behavior: 'auto' });
+}
+function finishAuth(user, profile, welcome) {
+  currentUser = user;
+  currentProfile = profile;
+  try { localStorage.removeItem(GUEST_KEY); } catch (e) {}
+  writeSession(user.id);
+  state = loadStateFor(user.id);
+  if (state.plan) {
+    state.ui.screen = 'week';
+  } else {
+    state.ui.screen = 'onboarding';
+  }
+  if (profile.regionId && REGIONS.some(function (r) { return r.id === profile.regionId; })) {
+    state.regionId = profile.regionId;
+    if (state.storeId && !availableStores().some(function (s) { return s.id === state.storeId; })) {
+      state.storeId = null;
+    }
+  }
+  saveState();
+  render();
+  toast(welcome);
+}
+async function registerUser(event) {
+  event.preventDefault();
+  if (authBusy) return;
+  const form = event.target;
+  const name = String((document.getElementById('reg-name') || {}).value || '').trim().replace(/\s+/g, ' ');
+  const email = normalizeEmail((document.getElementById('reg-email') || {}).value);
+  const password = String((document.getElementById('reg-password') || {}).value || '');
+  const password2 = String((document.getElementById('reg-password2') || {}).value || '');
+  const regionId = (document.getElementById('reg-region') || {}).value || 'moscow';
+  authDraft.name = name; authDraft.email = email; authDraft.regionId = regionId;
+
+  if (name.length < 2) { authError = 'Введи имя — хотя бы 2 символа'; render(); return; }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { authError = 'Проверь адрес почты'; render(); return; }
+  if (password.length < 6) { authError = 'Пароль должен быть не короче 6 символов'; render(); return; }
+  if (password !== password2) { authError = 'Пароли не совпадают'; render(); return; }
+  if (!REGIONS.some(function (r) { return r.id === regionId; })) { authError = 'Выбери регион'; render(); return; }
+
+  authBusy = true;
+  const submit = form.querySelector('button[type="submit"]');
+  if (submit) { submit.disabled = true; submit.textContent = 'Создаём аккаунт…'; }
+  try {
+    const existing = await dbGetByIndex('users', 'email', email);
+    if (existing) {
+      authBusy = false;
+      authError = 'Аккаунт с такой почтой уже есть в этом браузере';
+      render();
+      return;
+    }
+    const rec = await passwordRecord(password);
+    const user = {
+      id: randomId(),
+      name: name,
+      email: email,
+      password: rec,
+      createdAt: Date.now()
+    };
+    await dbAdd('users', user);
+    state.regionId = regionId;
+    const profile = defaultProfileFor(user);
+    profile.regionId = regionId;
+    await dbPut('profiles', profile);
+
+    const guest = loadStateFor(null);
+    const hasGuestProgress = guest.plan || guest.step > 1 || guest.storeId;
+    state = hasGuestProgress ? guest : makeDefaultState();
+    state.regionId = regionId;
+    if (state.storeId && !availableStores().some(function (s) { return s.id === state.storeId; })) state.storeId = null;
+    /* Переносим гостевой прогресс под ключ нового аккаунта до finishAuth. */
+    currentUser = user;
+    currentProfile = profile;
+    writeSession(user.id);
+    saveState();
+    authBusy = false;
+    authError = '';
+    finishAuth(user, profile, 'Аккаунт создан — данные хранятся локально');
+    if (state.plan) savePlanToHistory();
+  } catch (err) {
+    authBusy = false;
+    authError = 'Не удалось сохранить аккаунт в этом браузере';
+    render();
+  }
+}
+async function loginUser(event) {
+  event.preventDefault();
+  if (authBusy) return;
+  const form = event.target;
+  const email = normalizeEmail((document.getElementById('login-email') || {}).value);
+  const password = String((document.getElementById('login-password') || {}).value || '');
+  authDraft.email = email;
+  if (!email || !password) { authError = 'Введи почту и пароль'; render(); return; }
+  authBusy = true;
+  const submit = form.querySelector('button[type="submit"]');
+  if (submit) { submit.disabled = true; submit.textContent = 'Входим…'; }
+  try {
+    const user = await dbGetByIndex('users', 'email', email);
+    if (!user) {
+      authBusy = false;
+      authError = 'Аккаунт не найден в этом браузере';
+      render();
+      return;
+    }
+    const ok = await verifyPassword(password, user.password);
+    if (!ok) {
+      authBusy = false;
+      authError = 'Неверный пароль';
+      render();
+      return;
+    }
+    let profile = await dbGet('profiles', user.id);
+    currentUser = user;
+    if (!profile) {
+      profile = defaultProfileFor(user);
+      await dbPut('profiles', profile);
+    }
+    authBusy = false;
+    authError = '';
+    finishAuth(user, profile, 'С возвращением, ' + user.name.split(' ')[0] + '!');
+  } catch (err) {
+    authBusy = false;
+    authError = 'Не удалось войти. Попробуй ещё раз';
+    render();
+  }
+}
+async function logoutUser() {
+  saveState();
+  clearSession();
+  try { localStorage.removeItem(GUEST_KEY); } catch (e) {}
+  currentUser = null;
+  currentProfile = null;
+  profilePlans = [];
+  authDraft.name = '';
+  authDraft.email = '';
+  authDraft.regionId = '';
+  state = makeDefaultState();
+  state.ui.screen = 'auth';
+  modalOpen = false;
+  render();
+  toast('Вы вышли из профиля');
+}
+async function openProfile() {
+  if (!currentUser) { showAuth('auth'); return; }
+  if (['onboarding', 'week', 'day', 'shopping'].indexOf(state.ui.screen) !== -1) {
+    state.ui.profileBack = state.ui.screen;
+  }
+  await loadProfilePlans();
+  if (currentProfile) currentProfile.plansCount = Math.max(currentProfile.plansCount || 0, profilePlans.length);
+  state.ui.screen = 'profile';
+  modalOpen = false;
+  animateNext = true;
+  render();
+  window.scrollTo({ top: 0, behavior: 'auto' });
+}
+function openProfileEdit() {
+  if (!currentUser) { showAuth('auth'); return; }
+  profileAvatarDraft = (currentProfile && currentProfile.avatar) || CONFIG.avatars[0];
+  state.ui.screen = 'profile-edit';
+  render();
+  window.scrollTo({ top: 0, behavior: 'auto' });
+}
+async function saveProfileEdit(event) {
+  event.preventDefault();
+  const name = String((document.getElementById('profile-name') || {}).value || '').trim().replace(/\s+/g, ' ');
+  if (name.length < 2) { toast('Имя должно быть не короче 2 символов'); return; }
+  if (!currentUser || !currentProfile) return;
+  currentUser.name = name;
+  currentProfile.name = name;
+  currentProfile.avatar = profileAvatarDraft;
+  try {
+    await dbPut('users', currentUser);
+    await persistProfile();
+    state.ui.screen = 'profile';
+    render();
+    toast('Профиль сохранён');
+  } catch (e) {
+    toast('Не удалось сохранить профиль');
+  }
+}
+async function deleteAccount() {
+  if (!currentUser) return;
+  if (!window.confirm('Удалить локальный аккаунт и все сохранённые рационы? Это действие необратимо.')) return;
+  const userId = currentUser.id;
+  try {
+    const plans = await dbGetAllByIndex('plans', 'userId', userId);
+    await Promise.all((plans || []).map(function (p) { return dbDelete('plans', p.id); }));
+    await dbDelete('profiles', userId);
+    await dbDelete('users', userId);
+  } catch (e) {}
+  try {
+    localStorage.removeItem(stateKey(userId));
+    localStorage.removeItem(planKey(userId));
+  } catch (e) {}
+  clearSession();
+  try { localStorage.removeItem(GUEST_KEY); } catch (e) {}
+  currentUser = null;
+  currentProfile = null;
+  profilePlans = [];
+  authDraft.name = '';
+  authDraft.email = '';
+  authDraft.regionId = '';
+  state = makeDefaultState();
+  state.ui.screen = 'auth';
+  render();
+  toast('Аккаунт удалён');
+}
+function openRegion(from) {
+  state.ui.regionBack = from || (state.ui.screen === 'profile' ? 'profile' : 'onboarding');
+  state.ui.screen = 'region';
+  render();
+  window.scrollTo({ top: 0, behavior: 'auto' });
+}
+function selectRegion(regionId) {
+  const region = REGIONS.find(function (r) { return r.id === regionId; });
+  if (!region) return;
+  const back = state.ui.regionBack;
+  state.regionId = regionId;
+  if (state.storeId && !availableStores().some(function (s) { return s.id === state.storeId; })) {
+    state.storeId = state.plan ? (availableStores()[0] || {}).id || null : null;
+  }
+  if (currentProfile) {
+    currentProfile.regionId = regionId;
+    persistProfile();
+  }
+  saveState();
+  toast('Регион: ' + region.name + '. Цены пересчитаны');
+  if (back === 'profile') openProfile();
+  else if (back === 'week' && state.plan) setScreen('week');
+  else if (back === 'map') { state.ui.screen = 'map'; render(); window.scrollTo({ top: 0, behavior: 'auto' }); }
+  else goStep(1);
+}
+function openMap(back) {
+  state.ui.mapBack = back || (state.ui.screen === 'week' ? 'week' : state.ui.screen === 'profile' ? 'profile' : 'onboarding');
+  state.ui.screen = 'map';
+  render();
+  window.scrollTo({ top: 0, behavior: 'auto' });
+}
+function mapPointList() {
+  const region = getRegion();
+  const offsets = [
+    [0.008, 0.014], [-0.013, 0.020], [0.021, -0.006], [-0.006, -0.019],
+    [0.030, 0.018], [-0.024, -0.010], [0.004, 0.032], [0.026, -0.026],
+    [-0.031, 0.009], [0.015, -0.038]
+  ];
+  return availableStores().map(function (store, i) {
+    const off = offsets[i % offsets.length];
+    return {
+      store: store,
+      lat: region.center[0] + off[0],
+      lon: region.center[1] + off[1]
+    };
+  });
+}
+function mapEmbedURL() {
+  const region = getRegion();
+  const points = mapPointList().map(function (p) {
+    return p.lon.toFixed(5) + ',' + p.lat.toFixed(5) + ',pm2rdm';
+  }).join('~');
+  return 'https://yandex.ru/map-widget/v1/?ll=' + encodeURIComponent(region.center[1].toFixed(5) + ',' + region.center[0].toFixed(5)) +
+    '&z=' + region.zoom + '&pt=' + encodeURIComponent(points) + '&lang=ru_RU';
+}
+function yandexMapsLink() {
+  const region = getRegion();
+  return 'https://yandex.ru/maps/?ll=' + encodeURIComponent(region.center[1].toFixed(5) + ',' + region.center[0].toFixed(5)) + '&z=' + region.zoom;
+}
+function storeMapsLink(store) {
+  const q = (store ? store.name : 'магазин') + ' ' + getRegion().name;
+  return 'https://yandex.ru/maps/?text=' + encodeURIComponent(q);
+}
+async function restorePlan(id) {
+  const plan = profilePlans.find(function (p) { return String(p.id) === String(id); });
+  if (!plan) return;
+  const settings = plan.settings || {};
+  state = normalizeState(Object.assign({}, state, settings, {
+    plan: plan.plan,
+    shoppingChecked: plan.shoppingChecked || [],
+    ui: { screen: 'week', dayId: 0, dishId: null, slot: null, mapBack: 'week', profileBack: 'week', regionBack: 'onboarding' }
+  }));
+  if (currentProfile && plan.regionId) {
+    currentProfile.regionId = plan.regionId;
+    persistProfile();
+  }
+  modalOpen = false;
+  saveState();
+  render();
+  window.scrollTo({ top: 0, behavior: 'auto' });
+  toast('Рацион от ' + formatProfileDate(plan.createdAt) + ' восстановлен');
+}
+async function deletePlan(id) {
+  if (!window.confirm('Удалить этот рацион из истории?')) return;
+  try { await dbDelete('plans', id); } catch (e) {}
+  profilePlans = profilePlans.filter(function (p) { return String(p.id) !== String(id); });
+  if (currentProfile) currentProfile.plansCount = profilePlans.length;
+  persistProfile();
+  state.ui.screen = 'history';
+  render();
+  toast('Рацион удалён');
+}
+async function openHistory() {
+  await loadProfilePlans();
+  state.ui.screen = 'history';
+  render();
+  window.scrollTo({ top: 0, behavior: 'auto' });
 }
 
 function clearTimers() {
@@ -272,12 +732,30 @@ function every(fn, ms) {
 }
 
 /* ───────── ВЫБОРКИ И РАСЧЁТЫ ───────── */
+function getRegion() {
+  return REGIONS.find(function (r) { return r.id === state.regionId; }) || REGIONS[0];
+}
+function availableStores() {
+  const region = getRegion();
+  return region.storeIds.map(function (id) {
+    return STORES.find(function (s) { return s.id === id; });
+  }).filter(Boolean);
+}
 function getStore() {
-  return STORES.find(function (s) { return s.id === state.storeId; }) || null;
+  return availableStores().find(function (s) { return s.id === state.storeId; }) || null;
+}
+function effectiveStoreCoef(store) {
+  const region = getRegion();
+  if (!store) return region.priceCoef;
+  return store.coef * region.priceCoef * ((region.storeCoefs && region.storeCoefs[store.id]) || 1);
 }
 function storeCoef() {
-  const s = getStore();
-  return s ? s.coef : 1;
+  return effectiveStoreCoef(getStore());
+}
+function coefLabel(store) {
+  const diff = Math.round((effectiveStoreCoef(store) - 1) * 100);
+  if (diff === 0) return 'база';
+  return (diff > 0 ? '+' : '−') + Math.abs(diff) + '%';
 }
 function ingredientPrice(ing) {
   return Math.round(ing.pricePerUnit * storeCoef());
@@ -523,7 +1001,7 @@ function wizardHeader() {
   const step = state.step;
   const names = ['Магазин', 'Кто ест', 'Приёмы пищи', 'Бюджет', 'Аллергии', 'Стоп-продукты', 'Кухня'];
   return '<div class="wizard-head">' +
-    '<div class="wizard-top">' + backButton('back') + '</div>' +
+    '<div class="wizard-top">' + backButton('back') + '<div class="wizard-user">' + profileButtonHTML() + '</div></div>' +
     '<div class="segments">' + [1, 2, 3, 4, 5, 6, 7].map(function (n) {
       return '<span class="segment' + (n <= step ? ' done' : '') + '"></span>';
     }).join('') + '</div>' +
@@ -546,6 +1024,206 @@ function activeMealsText() {
   return activeSlots().map(function (s) { return CONFIG.meals[s].lower; }).join(', ');
 }
 
+/* ───────── ВХОД, РЕГИСТРАЦИЯ, ПРОФИЛЬ ───────── */
+function authErrorHTML() {
+  return authError ? '<div class="auth-error" role="alert">' + esc(authError) + '</div>' : '';
+}
+
+function renderAuth() {
+  const images = ['b_avocado_egg', 'b_syrniki', 'l_borsch', 'd_salmon_rice'];
+  return '<section class="screen auth-screen"><div class="auth-wrap">' +
+    '<div class="auth-top"><span class="auth-wordmark">🥗 ЛЁГКОСТЬ</span><span class="auth-local">локальный профиль</span></div>' +
+    '<div class="auth-collage">' +
+    images.map(function (id, i) {
+      return '<img class="auth-photo auth-photo-' + (i + 1) + '" src="' + esc(DISH[id] ? DISH[id].image : '') + '" alt="">';
+    }).join('') +
+    '</div>' +
+    '<h1 class="auth-title">Неделя еды.<br>Без лишних мыслей.</h1>' +
+    '<p class="auth-sub">Семейное меню, цены твоего региона и готовый список покупок — в одном приложении.</p>' +
+    '<div class="auth-actions">' +
+    '<button type="button" class="btn btn-primary" data-action="auth-register">Создать аккаунт</button>' +
+    '<button type="button" class="btn btn-secondary" data-action="auth-login">Войти</button>' +
+    '<button type="button" class="auth-link" data-action="auth-guest">Продолжить без профиля</button>' +
+    '</div>' +
+    '<div class="auth-features">' +
+    '<div class="auth-feature"><span>📍</span><div><b>Цены региона</b><small>магазины и стоимость зависят от города</small></div></div>' +
+    '<div class="auth-feature"><span>🗺️</span><div><b>Магазины на карте</b><small>Яндекс.Карты и ближайшие точки</small></div></div>' +
+    '<div class="auth-feature"><span>💾</span><div><b>Локальная база</b><small>профиль и рационы остаются в браузере</small></div></div>' +
+    '</div>' +
+    '<p class="auth-note">Аккаунт создаётся только на этом устройстве. Почта и пароль никуда не отправляются.</p>' +
+    '</div></section>';
+}
+
+function renderRegister() {
+  const selectedRegion = authDraft.regionId || state.regionId || 'moscow';
+  const options = REGIONS.map(function (r) {
+    return '<option value="' + r.id + '"' + (selectedRegion === r.id ? ' selected' : '') + '>' + esc(r.name) + '</option>';
+  }).join('');
+  return '<section class="screen auth-screen auth-form-screen"><div class="screen-body auth-form-wrap">' +
+    '<div class="wizard-top">' + backButton('auth-back') + '</div>' +
+    '<header class="page-head"><div class="eyebrow">ЛОКАЛЬНЫЙ АККАУНТ</div><h1>Создать профиль</h1>' +
+    '<p class="sub">Имя, почта и пароль нужны только для входа в этом браузере.</p></header>' +
+    '<form class="auth-form" data-form="register" novalidate>' +
+    '<label class="field"><span>Как тебя зовут</span><input id="reg-name" type="text" autocomplete="name" maxlength="40" value="' + esc(authDraft.name) + '" placeholder="Например, Аня"></label>' +
+    '<label class="field"><span>Почта</span><input id="reg-email" type="email" autocomplete="username" inputmode="email" value="' + esc(authDraft.email) + '" placeholder="anna@example.ru"></label>' +
+    '<label class="field"><span>Пароль</span><input id="reg-password" type="password" autocomplete="new-password" minlength="6" placeholder="Минимум 6 символов"></label>' +
+    '<label class="field"><span>Повтори пароль</span><input id="reg-password2" type="password" autocomplete="new-password" minlength="6" placeholder="Ещё раз"></label>' +
+    '<label class="field"><span>Регион</span><select id="reg-region">' + options + '</select></label>' +
+    authErrorHTML() +
+    '<button type="submit" class="btn btn-primary">Создать аккаунт</button>' +
+    '</form>' +
+    '<button type="button" class="auth-link" data-action="auth-login">Уже есть аккаунт? Войти</button>' +
+    '<p class="auth-note">Пароль хранится в виде криптографического хеша в IndexedDB. Данные не покидают устройство.</p>' +
+    '</div></section>';
+}
+
+function renderLogin() {
+  return '<section class="screen auth-screen auth-form-screen"><div class="screen-body auth-form-wrap">' +
+    '<div class="wizard-top">' + backButton('auth-back') + '</div>' +
+    '<header class="page-head"><div class="eyebrow">С ВОЗВРАЩЕНИЕМ</div><h1>Войти в профиль</h1>' +
+    '<p class="sub">Продолжи со своим рационом, настройками и списком покупок.</p></header>' +
+    '<form class="auth-form" data-form="login" novalidate>' +
+    '<label class="field"><span>Почта</span><input id="login-email" type="email" autocomplete="username" inputmode="email" value="' + esc(authDraft.email) + '" placeholder="anna@example.ru"></label>' +
+    '<label class="field"><span>Пароль</span><input id="login-password" type="password" autocomplete="current-password" placeholder="Твой пароль"></label>' +
+    authErrorHTML() +
+    '<button type="submit" class="btn btn-primary">Войти</button>' +
+    '</form>' +
+    '<button type="button" class="auth-link" data-action="auth-register">Нет аккаунта? Создать</button>' +
+    '<p class="auth-note">Восстановление пароля недоступно: аккаунт хранится только в этом браузере.</p>' +
+    '</div></section>';
+}
+
+function renderProfile() {
+  if (!currentUser) return renderAuth();
+  const region = getRegion();
+  const store = getStore();
+  const plans = profilePlans.slice(0, 3);
+  const created = currentProfile && currentProfile.createdAt ? currentProfile.createdAt : Date.now();
+  const days = Math.max(1, Math.floor((Date.now() - created) / 86400000) + 1);
+  const count = profilePlans.length || (currentProfile && currentProfile.plansCount) || 0;
+  const historyHTML = plans.length ? plans.map(function (p) {
+    const r = REGIONS.find(function (x) { return x.id === p.regionId; });
+    const st = STORES.find(function (x) { return x.id === p.storeId; });
+    return '<div class="history-row">' +
+      '<button type="button" class="history-main" data-action="restore-plan" data-id="' + p.id + '">' +
+      '<span class="history-date">' + esc(formatProfileDate(p.createdAt)) + '</span>' +
+      '<span class="history-meta">' + esc((st ? st.name : 'Магазин') + ' · ' + (r ? r.name : 'Регион')) + '</span>' +
+      '</button>' +
+      '<span class="history-cost">' + fmtMoney(p.cost) + '</span>' +
+      '</div>';
+  }).join('') : '<div class="profile-empty">Пока нет сохранённых рационов. Собери первый — он появится здесь.</div>';
+
+  return '<section class="screen profile-screen"><div class="screen-body">' +
+    '<div class="day-head">' + backButton('profile-back') + '<div class="eyebrow">ПРОФИЛЬ</div></div>' +
+    '<div class="card profile-card">' +
+    '<button type="button" class="avatar-edit" data-action="edit-profile" aria-label="Изменить профиль">' + avatarHTML(currentProfile, 'avatar-xl', 'Аватар') + '<span>✎</span></button>' +
+    '<div class="profile-identity"><h1 class="profile-name">' + esc(currentProfile.name) + '</h1>' +
+    '<div class="profile-email">' + esc(currentProfile.email) + '</div>' +
+    '<div class="profile-since">В «Лёгкости» с ' + esc(formatProfileDate(created)) + '</div></div>' +
+    '</div>' +
+    '<div class="profile-stats">' +
+    '<div class="stat-tile"><b>' + count + '</b><span>рационов</span></div>' +
+    '<div class="stat-tile"><b>' + ((currentProfile && currentProfile.replacedCount) || 0) + '</b><span>замен</span></div>' +
+    '<div class="stat-tile"><b>' + days + '</b><span>' + pluralize(days, ['день', 'дня', 'дней']) + '</span></div>' +
+    '</div>' +
+    '<div class="profile-section"><div class="section-title">Настройки рациона</div><div class="settings-card">' +
+    '<button type="button" class="setting-row" data-action="open-region" data-from="profile"><span class="setting-icon">📍</span><span class="setting-main"><span class="setting-label">Регион</span><span class="setting-value">' + esc(region.name) + ' · ' + availableStores().length + ' магазинов</span></span><span class="setting-arrow">›</span></button>' +
+    '<button type="button" class="setting-row" data-action="edit-step" data-step="1"><span class="setting-icon">🛒</span><span class="setting-main"><span class="setting-label">Магазин</span><span class="setting-value">' + (store ? esc(store.name) : 'Не выбран') + '</span></span><span class="setting-arrow">›</span></button>' +
+    '<button type="button" class="setting-row" data-action="edit-step" data-step="2"><span class="setting-icon">👨‍👩‍👧</span><span class="setting-main"><span class="setting-label">Семья</span><span class="setting-value">' + state.adults + ' взр.' + (state.childrenAges.length ? ' · ' + state.childrenAges.length + ' детей' : ' · без детей') + '</span></span><span class="setting-arrow">›</span></button>' +
+    '<button type="button" class="setting-row" data-action="edit-step" data-step="4"><span class="setting-icon">💰</span><span class="setting-main"><span class="setting-label">Бюджет</span><span class="setting-value">' + fmtMoney(state.budget) + ' на неделю</span></span><span class="setting-arrow">›</span></button>' +
+    '</div></div>' +
+    '<div class="profile-section"><div class="profile-section-head"><div class="section-title">Мои рационы</div>' +
+    (profilePlans.length ? '<button type="button" class="text-link" data-action="open-history">Все</button>' : '') + '</div>' +
+    '<div class="history-card">' + historyHTML + '</div></div>' +
+    '<div class="profile-actions">' +
+    '<button type="button" class="btn btn-secondary" data-action="edit-profile">Редактировать профиль</button>' +
+    '<button type="button" class="btn btn-ghost" data-action="logout">Выйти</button>' +
+    '</div>' +
+    '<div class="profile-data"><b>Локальная база IndexedDB</b><span>Профиль, настройки и рационы не отправляются на сервер. Фото блюд — Wikimedia Commons.</span>' +
+    '<a href="https://github.com/BladAdd/legkost/blob/main/assets/CREDITS.md" target="_blank" rel="noopener">Авторы фотографий</a></div>' +
+    '<button type="button" class="danger-link" data-action="delete-account">Удалить аккаунт</button>' +
+    '</div></section>';
+}
+
+function renderProfileEdit() {
+  if (!currentUser) return renderAuth();
+  const avatars = CONFIG.avatars.map(function (src) {
+    return '<button type="button" class="avatar-choice' + (profileAvatarDraft === src ? ' selected' : '') + '" data-action="select-avatar" data-src="' + esc(src) + '" aria-label="Выбрать аватар"><img src="' + esc(src) + '" alt=""></button>';
+  }).join('');
+  return '<section class="screen auth-screen auth-form-screen"><div class="screen-body auth-form-wrap">' +
+    '<div class="wizard-top">' + backButton('profile-back') + '</div>' +
+    '<header class="page-head"><div class="eyebrow">ПРОФИЛЬ</div><h1>Редактировать</h1><p class="sub">Имя и аватар видны только тебе — это локальный профиль.</p></header>' +
+    '<form class="auth-form" data-form="profile-edit" novalidate>' +
+    '<div class="field"><span>Аватар</span><div class="avatar-picker">' + avatars + '</div></div>' +
+    '<label class="field"><span>Имя</span><input id="profile-name" type="text" maxlength="40" autocomplete="name" value="' + esc(currentProfile.name) + '"></label>' +
+    '<label class="field"><span>Почта</span><input type="email" value="' + esc(currentProfile.email) + '" disabled></label>' +
+    '<button type="submit" class="btn btn-primary">Сохранить</button>' +
+    '</form>' +
+    '<p class="auth-note">Почту изменить нельзя: она привязана к локальному аккаунту.</p>' +
+    '</div></section>';
+}
+
+function renderHistory() {
+  if (!currentUser) return renderAuth();
+  const rows = profilePlans.length ? profilePlans.map(function (p) {
+    const r = REGIONS.find(function (x) { return x.id === p.regionId; });
+    const st = STORES.find(function (x) { return x.id === p.storeId; });
+    return '<div class="history-row">' +
+      '<button type="button" class="history-main" data-action="restore-plan" data-id="' + p.id + '">' +
+      '<span class="history-date">' + esc(formatProfileDate(p.createdAt)) + '</span>' +
+      '<span class="history-meta">' + esc((st ? st.name : 'Магазин') + ' · ' + (r ? r.name : 'Регион') + ' · ' + p.people + ' чел.') + '</span>' +
+      '</button>' +
+      '<span class="history-cost">' + fmtMoney(p.cost) + '</span>' +
+      '<button type="button" class="history-delete" data-action="delete-plan" data-id="' + p.id + '" aria-label="Удалить рацион">×</button>' +
+      '</div>';
+  }).join('') : '<div class="profile-empty">История пока пуста.</div>';
+  return '<section class="screen profile-screen"><div class="screen-body">' +
+    '<div class="day-head">' + backButton('profile-back') + '<div class="eyebrow">ИСТОРИЯ</div></div>' +
+    '<header class="page-head"><h1>Мои рационы</h1><p class="sub">Сохранённые планы можно восстановить в один клик.</p></header>' +
+    '<div class="history-card">' + rows + '</div>' +
+    '</div></section>';
+}
+
+function renderRegion() {
+  const current = getRegion();
+  const rows = REGIONS.map(function (r) {
+    const diff = Math.round((r.priceCoef - 1) * 100);
+    const price = diff === 0 ? 'базовые цены' : (diff > 0 ? '+' : '−') + Math.abs(diff) + '% к цене';
+    return '<button type="button" class="region-row' + (r.id === current.id ? ' selected' : '') + '" data-action="select-region" data-id="' + r.id + '">' +
+      '<span class="region-pin">📍</span><span class="region-main"><span class="region-name">' + esc(r.name) + '</span>' +
+      '<span class="region-meta">' + esc(r.area) + ' · ' + r.storeIds.length + ' магазинов</span></span>' +
+      '<span class="region-price">' + esc(price) + '</span><span class="check-badge">✓</span></button>';
+  }).join('');
+  return '<section class="screen region-screen"><div class="screen-body">' +
+    '<div class="day-head">' + backButton('region-back') + '<div class="eyebrow">РЕГИОН</div></div>' +
+    '<header class="page-head"><h1>Откуда ты?</h1><p class="sub">От региона зависят доступные магазины и цены в рационе.</p></header>' +
+    '<div class="region-list">' + rows + '</div>' +
+    '<p class="footnote">Цены демонстрационные: базовая стоимость умножается на индекс региона и коэффициент магазина.</p>' +
+    '</div></section>';
+}
+
+function renderMap() {
+  const region = getRegion();
+  const stores = availableStores();
+  const rows = stores.map(function (s) {
+    return '<button type="button" class="map-store-row' + (state.storeId === s.id ? ' selected' : '') + '" data-action="map-select-store" data-id="' + s.id + '">' +
+      '<span class="store-logo" style="background:' + s.color + '">' + esc(s.letter) + '</span>' +
+      '<span class="map-store-main"><span class="map-store-name">' + esc(s.name) + '</span><span class="map-store-slogan">' + esc(s.slogan) + '</span></span>' +
+      '<span class="map-store-coef">' + coefLabel(s) + '</span>' +
+      (state.storeId === s.id ? '<span class="check-badge">✓</span>' : '<span class="map-store-arrow">›</span>') +
+      '</button>';
+  }).join('');
+  return '<section class="screen map-screen"><div class="screen-body">' +
+    '<div class="day-head">' + backButton('map-back') + '<div class="eyebrow">ЯНДЕКС.КАРТЫ</div></div>' +
+    '<header class="page-head"><h1>Магазины рядом</h1><p class="sub">' + esc(region.name) + ' · ' + stores.length + ' доступных магазинов</p></header>' +
+    '<div class="region-pill"><span>📍 ' + esc(region.name) + '</span><button type="button" class="text-link" data-action="open-region" data-from="map">Сменить</button></div>' +
+    '<div class="map-frame"><iframe src="' + esc(mapEmbedURL()) + '" title="Карта магазинов в регионе ' + esc(region.name) + '" loading="lazy" allowfullscreen></iframe></div>' +
+    '<div class="map-caption"><span>Точки — ориентир по магазинам региона.</span><a href="' + esc(yandexMapsLink()) + '" target="_blank" rel="noopener">Открыть в Яндекс.Картах ↗</a></div>' +
+    '<div class="map-stores">' + rows + '</div>' +
+    '<p class="footnote">Карта загружается с сервиса Яндекс.Карт. Выбор магазина сразу применяет его цены к рациону.</p>' +
+    '</div></section>';
+}
+
 function renderOnboarding() {
   const map = {
     1: renderStepStore,
@@ -560,12 +1238,15 @@ function renderOnboarding() {
 }
 
 function renderStepStore() {
-  const cards = STORES.map(function (s) {
+  const region = getRegion();
+  const stores = availableStores();
+  const cards = stores.map(function (s) {
     const selected = state.storeId === s.id;
-    return '<button type="button" class="store-card' + (selected ? ' selected' : '') + '" data-action="select-store" data-id="' + s.id + '" data-search="' + esc((s.name + ' ' + s.slogan).toLowerCase()) + '">' +
+    return '<button type="button" class="store-card' + (selected ? ' selected' : '') + '" data-action="select-store" data-id="' + s.id + '" data-search="' + esc((s.name + ' ' + s.slogan + ' ' + region.name).toLowerCase()) + '">' +
       '<span class="store-logo" style="background:' + s.color + '">' + esc(s.letter) + '</span>' +
       '<span class="store-name">' + esc(s.name) + '</span>' +
       '<span class="store-slogan">' + esc(s.slogan) + '</span>' +
+      '<span class="store-coef">' + coefLabel(s) + '</span>' +
       '<span class="check-badge">✓</span>' +
       '</button>';
   }).join('');
@@ -573,9 +1254,14 @@ function renderStepStore() {
     '<div class="screen-body">' +
     wizardHeader() +
     '<header class="page-head"><h1>Где покупаешь продукты?</h1>' +
-    '<p class="sub">Соберём меню из того, что есть на полках, и посчитаем по ценам этого магазина.</p></header>' +
+    '<p class="sub">Соберём меню из того, что есть на полках в твоём регионе, и посчитаем по местным ценам.</p></header>' +
+    '<div class="region-bar">' +
+    '<button type="button" class="region-current" data-action="open-region" data-from="onboarding">' +
+    '<span class="region-current-pin">📍</span><span><b>' + esc(region.name) + '</b><small>' + stores.length + ' магазинов · ' + esc(region.note) + '</small></span><span class="region-change">Изменить</span></button>' +
+    '<button type="button" class="region-map-btn" data-action="open-map" data-back="onboarding" aria-label="Открыть карту магазинов">🗺️<span>Карта</span></button>' +
+    '</div>' +
     '<label class="search-field"><span class="search-icon">🔍</span>' +
-    '<input type="search" id="store-search" placeholder="Найти магазин" autocomplete="off" aria-label="Найти магазин"></label>' +
+    '<input type="search" id="store-search" placeholder="Найти магазин в ' + esc(region.name) + '" autocomplete="off" aria-label="Найти магазин"></label>' +
     '<div class="store-grid" id="store-grid">' + cards + '</div>' +
     '<div class="empty-search" id="store-empty" hidden>Магазин не найден</div>' +
     '</div>' +
@@ -778,7 +1464,7 @@ function renderDashboard() {
       '<div class="dash-day" data-dashday="' + i + '">' +
       '<div class="dash-skel"><span class="skeleton sk-circle"></span><span class="sk-lines"><span class="skeleton sk-line"></span><span class="skeleton sk-line short"></span></span></div>' +
       '<div class="dash-real">' +
-      '<span class="dash-mini-photo" style="background:' + (meal ? meal.dish.gradient : 'linear-gradient(135deg,#F9D6B8,#E96D3F)') + '">' + (meal ? meal.dish.emoji : '🥗') + '</span>' +
+      '<img class="dash-mini-photo" src="' + esc(meal ? meal.dish.image : 'assets/food/dishes/l_borsch.jpg') + '" alt="">' +
       '<span class="dash-day-name">' + CONFIG.days[i] + '</span>' +
       '<span class="dash-day-price">' + (d ? fmtMoney(d.cost) : '') + '</span>' +
       '</div></div>'
@@ -817,7 +1503,7 @@ function renderWeek() {
     const meal = d.meals.length ? d.meals[d.meals.length - 1] : null;
     const isToday = i === todayIndex();
     return '<button type="button" class="day-card' + (isToday ? ' today' : '') + '" data-action="open-day" data-day="' + i + '">' +
-      '<span class="day-photo" style="background:' + (meal ? meal.dish.gradient : 'linear-gradient(135deg,#EFE5D6,#D8C8B4)') + '">' + (meal ? meal.dish.emoji : '🍽️') + '</span>' +
+      '<img class="day-photo" src="' + esc(meal ? meal.dish.image : 'assets/food/dishes/l_borsch.jpg') + '" alt="">' +
       '<span class="day-body">' +
       '<span class="day-title-row"><span class="day-title">' + CONFIG.days[i] + '</span>' +
       (isToday ? '<span class="today-badge">СЕГОДНЯ</span>' : '') + '</span>' +
@@ -829,8 +1515,10 @@ function renderWeek() {
 
   return '<section class="screen week-screen"><div class="screen-body">' +
     '<div class="week-head"><div><div class="eyebrow">ЛЁГКОСТЬ</div><h1>Твоя неделя</h1></div>' +
-    '<button type="button" class="reset-link" data-action="reset">Сбросить</button></div>' +
-    (store ? '<p class="week-store">Меню для «' + esc(store.name) + '»</p>' : '') +
+    '<div class="week-actions">' + profileButtonHTML() +
+    '<button type="button" class="reset-link" data-action="reset">Сбросить</button></div></div>' +
+    '<p class="week-store">' + (store ? 'Меню для «' + esc(store.name) + '» · ' : '') + esc(getRegion().name) +
+    ' <button type="button" class="inline-link" data-action="open-map" data-back="week">на карте</button></p>' +
     '<button type="button" class="shop-hero" data-action="open-shopping">' +
     '<span class="shop-hero-top"><span>🛒 ' + shop.count + ' ' + pluralPositions(shop.count) + '</span></span>' +
     '<span class="shop-hero-title">Открыть список покупок <span class="title-arrow">›</span></span>' +
@@ -867,7 +1555,7 @@ function renderDay() {
     return '<div class="slot-block">' +
       '<div class="slot-title"><span class="slot-emoji">' + CONFIG.meals[slot].emoji + '</span><span>' + title + '</span></div>' +
       '<button type="button" class="dish-card" data-action="open-recipe" data-day="' + idx + '" data-slot="' + slot + '">' +
-      '<span class="dish-thumb" style="background:' + m.dish.gradient + '">' + m.dish.emoji + '</span>' +
+      '<img class="dish-thumb" src="' + esc(m.dish.image) + '" alt="">' +
       '<span class="dish-body"><span class="dish-name">' + esc(m.dish.name) + '</span>' +
       '<span class="dish-meta">🕐 ' + m.dish.timeMin + ' мин · 👥 ' + m.portions + ' ' + pluralPortions(m.portions) + '</span></span>' +
       '<span class="dish-price"><span>' + fmtMoney(m.cost) + '</span><small>' + m.perPortion + ' ₽/порц</small></span>' +
@@ -955,7 +1643,9 @@ function renderRecipeModal() {
 
   return '<div class="modal-overlay" data-action="modal-backdrop">' +
     '<div class="recipe-modal" role="dialog" aria-modal="true" aria-label="' + esc(m.dish.name) + '">' +
-    '<div class="recipe-banner" style="background:' + m.dish.gradient + '">' +
+    '<div class="recipe-banner">' +
+    '<img class="recipe-cover" src="' + esc(m.dish.image) + '" alt="' + esc(m.dish.name) + '">' +
+    '<div class="recipe-banner-shade"></div>' +
     '<button type="button" class="round-btn modal-close" data-action="close-modal" aria-label="Закрыть">×</button>' +
     '<span class="recipe-banner-emoji">' + m.dish.emoji + '</span></div>' +
     '<div class="recipe-content">' +
@@ -990,12 +1680,20 @@ function render() {
   }
   let html = '';
   switch (state.ui.screen) {
+    case 'auth': html = renderAuth(); break;
+    case 'register': html = renderRegister(); break;
+    case 'login': html = renderLogin(); break;
     case 'loading': html = renderLoading(); break;
     case 'dashboard': html = renderDashboard(); break;
     case 'week': html = renderWeek(); break;
     case 'day': html = renderDay(); break;
     case 'shopping': html = renderShopping(); break;
     case 'empty': html = renderEmpty(); break;
+    case 'profile': html = renderProfile(); break;
+    case 'profile-edit': html = renderProfileEdit(); break;
+    case 'history': html = renderHistory(); break;
+    case 'region': html = renderRegion(); break;
+    case 'map': html = renderMap(); break;
     default: html = renderOnboarding();
   }
   app.innerHTML = html;
@@ -1056,6 +1754,7 @@ function startGeneration() {
     setScreen('empty');
     return;
   }
+  savePlanToHistory();
   setScreen('loading');
   runLoadingAnimation();
 }
@@ -1162,6 +1861,7 @@ function replaceDish() {
   state.plan.createdAt = Date.now();
   state.plan.partial = state.plan.days.some(function (d) { return d.skipped && d.skipped.length; });
   saveState();
+  recordReplacement();
   render();
   toast('Блюдо заменено');
 }
@@ -1290,6 +1990,92 @@ function onClick(e) {
     return;
   }
   switch (action) {
+    case 'open-auth':
+      showAuth('auth');
+      break;
+    case 'auth-register':
+      authError = '';
+      showAuth('register');
+      break;
+    case 'auth-login':
+      authError = '';
+      showAuth('login');
+      break;
+    case 'auth-back':
+      showAuth('auth');
+      break;
+    case 'auth-guest':
+      enterGuest();
+      break;
+    case 'open-profile':
+      openProfile();
+      break;
+    case 'edit-profile':
+      openProfileEdit();
+      break;
+    case 'select-avatar':
+      profileAvatarDraft = target.getAttribute('data-src');
+      document.querySelectorAll('.avatar-choice').forEach(function (el) {
+        el.classList.toggle('selected', el.getAttribute('data-src') === profileAvatarDraft);
+      });
+      break;
+    case 'profile-back':
+      if (state.ui.screen === 'profile-edit' || state.ui.screen === 'history') {
+        state.ui.screen = 'profile';
+        render();
+        window.scrollTo({ top: 0, behavior: 'auto' });
+      } else {
+        const back = state.ui.profileBack || 'week';
+        if (back === 'onboarding') goStep(state.step);
+        else setScreen(back);
+      }
+      break;
+    case 'logout':
+      logoutUser();
+      break;
+    case 'delete-account':
+      deleteAccount();
+      break;
+    case 'open-history':
+      openHistory();
+      break;
+    case 'restore-plan':
+      restorePlan(target.getAttribute('data-id'));
+      break;
+    case 'delete-plan':
+      deletePlan(target.getAttribute('data-id'));
+      break;
+    case 'open-region':
+      openRegion(target.getAttribute('data-from') || (state.ui.screen === 'profile' ? 'profile' : 'onboarding'));
+      break;
+    case 'select-region':
+      selectRegion(target.getAttribute('data-id'));
+      break;
+    case 'region-back':
+      if (state.ui.regionBack === 'profile') openProfile();
+      else if (state.ui.regionBack === 'week' && state.plan) setScreen('week');
+      else if (state.ui.regionBack === 'map') { state.ui.screen = 'map'; render(); window.scrollTo({ top: 0, behavior: 'auto' }); }
+      else goStep(1);
+      break;
+    case 'open-map':
+      openMap(target.getAttribute('data-back') || (state.ui.screen === 'week' ? 'week' : 'onboarding'));
+      break;
+    case 'map-back':
+      if (state.ui.mapBack === 'week' && state.plan) setScreen('week');
+      else if (state.ui.mapBack === 'profile') openProfile();
+      else goStep(1);
+      break;
+    case 'map-select-store':
+      state.storeId = target.getAttribute('data-id');
+      saveState();
+      toast('Магазин выбран — цены обновлены');
+      if (state.ui.mapBack === 'week' && state.plan) setScreen('week');
+      else if (state.ui.mapBack === 'profile') openProfile();
+      else goStep(1);
+      break;
+    case 'edit-step':
+      goStep(parseInt(target.getAttribute('data-step'), 10) || 1);
+      break;
     case 'back':
       if (state.ui.screen === 'onboarding') {
         if (state.step > 1) goStep(state.step - 1);
@@ -1441,6 +2227,15 @@ function onClick(e) {
   }
 }
 
+function onSubmit(e) {
+  const form = e.target;
+  if (!form || !form.getAttribute || !form.getAttribute('data-form')) return;
+  const kind = form.getAttribute('data-form');
+  if (kind === 'register') registerUser(e);
+  else if (kind === 'login') loginUser(e);
+  else if (kind === 'profile-edit') saveProfileEdit(e);
+}
+
 function onInput(e) {
   const el = e.target;
   if (el.id === 'store-search') {
@@ -1463,12 +2258,47 @@ function onKeydown(e) {
 }
 
 /* ───────── ИНИЦИАЛИЗАЦИЯ ───────── */
-function init() {
+async function init() {
   document.addEventListener('click', onClick);
   document.addEventListener('input', onInput);
   document.addEventListener('change', onInput);
+  document.addEventListener('submit', onSubmit);
   document.addEventListener('keydown', onKeydown);
-  saveState();
+  try { await openDB(); } catch (e) { /* гостевой режим останется доступен */ }
+
+  const session = readSession();
+  if (session && session.userId) {
+    try {
+      const user = await dbGet('users', session.userId);
+      if (user) {
+        currentUser = user;
+        let profile = await dbGet('profiles', user.id);
+        if (!profile) {
+          state = loadStateFor(user.id);
+          profile = defaultProfileFor(user);
+          await dbPut('profiles', profile);
+        }
+        currentProfile = profile;
+        state = loadStateFor(user.id);
+        state.ui.screen = state.plan ? 'week' : 'onboarding';
+        saveState();
+        render();
+        return;
+      }
+      clearSession();
+    } catch (e) {
+      clearSession();
+    }
+  }
+  try {
+    if (localStorage.getItem(GUEST_KEY) === '1') {
+      state = loadStateFor(null);
+      state.ui.screen = state.plan ? 'week' : 'onboarding';
+      render();
+      return;
+    }
+  } catch (e) {}
+  state.ui.screen = 'auth';
   render();
 }
 

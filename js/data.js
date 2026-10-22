@@ -14,6 +14,88 @@ const STORES = [
   { id: 'vkusvill',    name: 'ВкусВилл',   letter: 'В', color: '#4CAF50', slogan: 'Своё производство',   coef: 1.15 }
 ];
 
+/* Регионы: доступные магазины и поправка к ценам.
+   center = [широта, долгота] — используется для карты Яндекс.Карт. */
+const REGIONS = [
+  {
+    id: 'moscow', name: 'Москва', area: 'Москва и область',
+    center: [55.7558, 37.6173], zoom: 10, priceCoef: 1.00,
+    storeIds: ['pyaterochka', 'magnit', 'dixy', 'chizhik', 'svetofor', 'perekrestok', 'lenta', 'auchan', 'metro', 'vkusvill'],
+    storeCoefs: { lenta: 0.98, metro: 0.96, vkusvill: 1.01 },
+    note: 'Базовые цены сети'
+  },
+  {
+    id: 'spb', name: 'Санкт-Петербург', area: 'Ленинградская область',
+    center: [59.9398, 30.3158], zoom: 10, priceCoef: 1.04,
+    storeIds: ['pyaterochka', 'magnit', 'dixy', 'chizhik', 'svetofor', 'perekrestok', 'lenta', 'vkusvill'],
+    storeCoefs: { lenta: 0.96, perekrestok: 1.02, vkusvill: 1.02 },
+    note: 'Северо-Запад · цены выше'
+  },
+  {
+    id: 'kazan', name: 'Казань', area: 'Республика Татарстан',
+    center: [55.7963, 49.1064], zoom: 10, priceCoef: 0.94,
+    storeIds: ['pyaterochka', 'magnit', 'dixy', 'perekrestok', 'lenta', 'metro'],
+    storeCoefs: { magnit: 0.97, lenta: 0.99 },
+    note: 'Поволжье · цены ниже'
+  },
+  {
+    id: 'ekaterinburg', name: 'Екатеринбург', area: 'Свердловская область',
+    center: [56.8389, 60.6122], zoom: 10, priceCoef: 0.97,
+    storeIds: ['pyaterochka', 'magnit', 'svetofor', 'lenta', 'metro', 'vkusvill'],
+    storeCoefs: { lenta: 0.98, vkusvill: 1.04 },
+    note: 'Урал · средние цены'
+  },
+  {
+    id: 'novosibirsk', name: 'Новосибирск', area: 'Новосибирская область',
+    center: [55.0084, 82.9346], zoom: 10, priceCoef: 0.96,
+    storeIds: ['pyaterochka', 'magnit', 'dixy', 'svetofor', 'lenta', 'metro'],
+    storeCoefs: { lenta: 0.97, magnit: 0.98 },
+    note: 'Сибирь · цены ниже'
+  },
+  {
+    id: 'krasnodar', name: 'Краснодар', area: 'Краснодарский край',
+    center: [45.0355, 38.9769], zoom: 10, priceCoef: 0.92,
+    storeIds: ['pyaterochka', 'magnit', 'svetofor', 'lenta', 'metro'],
+    storeCoefs: { magnit: 1.02, svetofor: 0.97 },
+    note: 'Юг России · самые низкие цены'
+  },
+  {
+    id: 'nizhny', name: 'Нижний Новгород', area: 'Нижегородская область',
+    center: [56.3269, 44.0059], zoom: 10, priceCoef: 0.95,
+    storeIds: ['pyaterochka', 'magnit', 'dixy', 'chizhik', 'perekrestok', 'lenta'],
+    storeCoefs: { lenta: 0.98, perekrestok: 1.01 },
+    note: 'Поволжье · цены ниже'
+  },
+  {
+    id: 'samara', name: 'Самара', area: 'Самарская область',
+    center: [53.1959, 50.1002], zoom: 10, priceCoef: 0.93,
+    storeIds: ['pyaterochka', 'magnit', 'dixy', 'lenta', 'metro'],
+    storeCoefs: { lenta: 1.00, metro: 0.97 },
+    note: 'Поволжье · цены ниже'
+  },
+  {
+    id: 'sochi', name: 'Сочи', area: 'Краснодарский край',
+    center: [43.6028, 39.7303], zoom: 11, priceCoef: 1.12,
+    storeIds: ['pyaterochka', 'magnit', 'perekrestok', 'lenta', 'vkusvill'],
+    storeCoefs: { perekrestok: 1.03, vkusvill: 1.04 },
+    note: 'Курорт · цены выше'
+  },
+  {
+    id: 'vladivostok', name: 'Владивосток', area: 'Приморский край',
+    center: [43.1155, 131.8855], zoom: 10, priceCoef: 1.17,
+    storeIds: ['pyaterochka', 'magnit', 'svetofor', 'lenta', 'metro'],
+    storeCoefs: { lenta: 1.02, svetofor: 0.98 },
+    note: 'Дальний Восток · цены выше'
+  },
+  {
+    id: 'kaliningrad', name: 'Калининград', area: 'Калининградская область',
+    center: [54.7104, 20.4522], zoom: 10, priceCoef: 1.07,
+    storeIds: ['pyaterochka', 'magnit', 'dixy', 'lenta', 'vkusvill'],
+    storeCoefs: { vkusvill: 1.03 },
+    note: 'Запад России · цены выше'
+  }
+];
+
 /* allergens: nuts | peanut | milk | egg | gluten | fish | seafood | soy | honey | citrus | sesame */
 const INGREDIENTS = [
   { id: 'chicken_fillet', name: 'Куриное филе', emoji: '🍗', category: 'meat', unit: 'kg', pricePerUnit: 1274, allergens: [], syn: ['курица', 'куриц', 'куриное'] },
@@ -813,6 +895,7 @@ const INGREDIENT_MAP = {};
 INGREDIENTS.forEach(function (ing) { INGREDIENT_MAP[ing.id] = ing; });
 
 DISHES.forEach(function (dish) {
+  dish.image = 'assets/food/dishes/' + dish.id + '.jpg';
   const set = [];
   dish.ingredients.forEach(function (it) {
     const ing = INGREDIENT_MAP[it.ingId];

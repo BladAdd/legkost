@@ -945,6 +945,12 @@ function coefLabel(store) {
   if (diff === 0) return 'база';
   return (diff > 0 ? '+' : '−') + Math.abs(diff) + '%';
 }
+function coefTone(store) {
+  const diff = Math.round((effectiveStoreCoef(store) - 1) * 100);
+  if (diff > 0) return ' coef-up';
+  if (diff < 0) return ' coef-down';
+  return ' coef-neutral';
+}
 function priceSnapshotForRegion() {
   return ORSK_PRICE_SNAPSHOT && state.regionId === ORSK_PRICE_SNAPSHOT.regionId ? ORSK_PRICE_SNAPSHOT : null;
 }
@@ -1597,7 +1603,7 @@ function renderMap() {
       '<span class="map-store-slogan">' + esc(s.address || s.slogan) + '</span>' +
       (s.delivery ? '<span class="map-store-delivery">' + (s.delivery.service === 'Самовывоз' ? '🚶 ' : '🛵 ') + esc(s.delivery.eta) + (s.delivery.min ? ' · от ' + s.delivery.min + ' ₽' : '') + '</span>' : '') +
       '</span>' +
-      '<span class="map-store-coef">' + coefLabel(s) + '</span>' +
+      '<span class="map-store-coef' + coefTone(s) + '">' + coefLabel(s) + '</span>' +
       (state.storeId === s.id ? '<span class="check-badge">✓</span>' : '<span class="map-store-arrow">›</span>') +
       '</button>';
   }).join('');
@@ -1647,7 +1653,7 @@ function renderStepStore() {
       '<span class="store-slogan">' + esc(s.slogan) + '</span>' +
       (s.delivery ? '<span class="store-delivery-line">' + (s.delivery.service === 'Самовывоз' ? '🚶 ' : '🛵 ') + esc(s.delivery.eta) + ' · ' + (s.delivery.min ? 'от ' + s.delivery.min + ' ₽' : 'без минимума') + '</span>' : '') +
       (s.address ? '<span class="store-address-line">📍 ' + esc(s.address) + (s.branches ? ' · ' + s.branches + ' адр.' : '') + '</span>' : '') +
-      '<span class="store-card-foot"><span class="store-coef">' + coefLabel(s) + '</span>' +
+      '<span class="store-card-foot"><span class="store-coef' + coefTone(s) + '">' + coefLabel(s) + '</span>' +
       (s.deliveryUrl ? '<span class="store-link">' + (s.delivery && s.delivery.service === 'Самовывоз' ? 'адреса ↗' : 'доставка ↗') + '</span>' : '') + '</span>' +
       '</span><span class="check-badge">✓</span></button>';
   }).join('');

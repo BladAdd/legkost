@@ -283,6 +283,9 @@ h1, h2, p { margin: 0; }
   font-weight: 800;
   color: #7A9A84;
 }
+.store-coef.coef-up { color: #B15A38; }
+.store-coef.coef-down { color: #5F866D; }
+.store-coef.coef-neutral { color: var(--muted); }
 .search-field {
   display: flex;
   align-items: center;
@@ -1322,6 +1325,9 @@ input[type="range"]::-moz-range-thumb {
 .map-store-name { display: block; font-size: 12.5px; font-weight: 800; }
 .map-store-slogan { display: block; color: var(--muted); font-size: 9.5px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .map-store-coef { color: #63866E; background: var(--green-soft); border-radius: 99px; font-size: 9px; font-weight: 800; padding: 4px 6px; white-space: nowrap; }
+.map-store-coef.coef-up { color: #A95032; background: var(--danger-soft); }
+.map-store-coef.coef-down { color: #63866E; background: var(--green-soft); }
+.map-store-coef.coef-neutral { color: #6E6256; background: #F0EAE2; }
 .map-store-arrow { color: #B7AC9F; font-size: 20px; }
 .map-store-row > .check-badge { top: 8px; right: 8px; }
 .map-store-row.selected .map-store-coef { margin-right: 14px; }

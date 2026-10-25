@@ -1,7 +1,7 @@
 {
-  "gateway": "https://loud-jellyfish-27.loca.lt",
+  "gateway": "https://fluffy-mice-write.loca.lt",
   "model": "qwen2.5:3b",
-  "started": "2026-10-25T11:02:10.921Z",
-  "updated": "2026-10-25T11:02:10.921Z",
+  "started": "2026-10-25T11:05:58.802Z",
+  "updated": "2026-10-25T11:05:58.803Z",
   "note": "Публичный адрес домашнего сервера ИИ. Обновляется автоматически: server/publish.mjs"
 }

@@ -1,7 +1,7 @@
 {
-  "gateway": "https://fluffy-mice-write.loca.lt",
+  "gateway": "https://dry-hornets-strive.loca.lt",
   "model": "qwen2.5:3b",
-  "started": "2026-10-25T11:05:58.802Z",
-  "updated": "2026-10-25T11:05:58.803Z",
+  "started": "2026-10-25T11:10:15.640Z",
+  "updated": "2026-10-25T11:10:15.641Z",
   "note": "Публичный адрес домашнего сервера ИИ. Обновляется автоматически: server/publish.mjs"
 }

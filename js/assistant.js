@@ -665,6 +665,10 @@ function init() {
   window.addEventListener('online', function () { refreshServer(true); });
   refreshServer(false);
   if (AI.mode === 'custom') checkCustom();
+  // если сервер был выключен, проверяем его в фоне — статус сам обновится
+  setInterval(function () {
+    if (AI.mode === 'server' && !AI.server.online) refreshServer(true);
+  }, 30000);
 }
 
 window.LegkostAI = AI;

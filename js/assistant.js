@@ -10,7 +10,13 @@ const AI = {
   loading: false,
   available: false,
   model: 'qwen3:4b',
-  gateway: 'http://127.0.0.1:3001',
+  gateway: (function () {
+    try {
+      var saved = localStorage.getItem('legkost.ai.gateway');
+      if (saved) return saved;
+    } catch (e) {}
+    return 'http://127.0.0.1:3001';
+  })(),
   messages: [], // {role, content, ts}
   lastError: '',
   quickActions: [
@@ -117,6 +123,15 @@ async function checkHealth() {
     return data.ok && data.ollama;
   } catch (e) { return false; }
 }
+
+function setGateway(url) {
+  AI.gateway = url || 'http://127.0.0.1:3001';
+  try { localStorage.setItem('legkost.ai.gateway', AI.gateway); } catch (e) {}
+  AI.available = false;
+  AI.open = false;
+  render();
+}
+AI.setGateway = setGateway;
 
 async function sendMessage(text) {
   if (!AI.available || AI.loading) return;

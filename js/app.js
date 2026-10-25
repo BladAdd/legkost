@@ -1521,6 +1521,7 @@ function renderProfile() {
     '<div class="stat-tile"><b>' + days + '</b><span>' + pluralize(days, ['день', 'дня', 'дней']) + '</span></div>' +
     '</div>' +
     '<div class="profile-actions"><button type="button" class="setting-row" data-action="open-recipes"><span class="setting-icon">📝</span><span class="setting-main"><span class="setting-label">Мои рецепты</span><span class="setting-value">' + (loadCustomRecipes ? loadCustomRecipes().length : 0) + ' своих блюд</span></span><span class="setting-arrow">›</span></button></div>' +
+    '<div class="profile-actions"><button type="button" class="setting-row" data-action="ai-set-gateway"><span class="setting-icon">🤖</span><span class="setting-main"><span class="setting-label">ИИ-ассистент</span><span class="setting-value">' + esc((typeof AI !== 'undefined' && AI.gateway) ? AI.gateway : 'не настроен') + '</span></span><span class="setting-arrow">›</span></button></div>' +
     '<div class="profile-section"><div class="section-title">Настройки рациона</div><div class="settings-card">' +
     '<button type="button" class="setting-row" data-action="open-region" data-from="profile"><span class="setting-icon">📍</span><span class="setting-main"><span class="setting-label">Регион</span><span class="setting-value">' + esc(region.name) + ' · ' + availableStores().length + ' магазинов</span></span><span class="setting-arrow">›</span></button>' +
     '<button type="button" class="setting-row" data-action="edit-step" data-step="1"><span class="setting-icon">🛒</span><span class="setting-main"><span class="setting-label">Магазин</span><span class="setting-value">' + (store ? esc(store.name) : 'Не выбран') + '</span></span><span class="setting-arrow">›</span></button>' +
@@ -2890,6 +2891,16 @@ function onClick(e) {
       state.ui.editRecipeId = null;
       setScreen('recipes');
       break;
+    case 'ai-set-gateway': {
+      var url = window.prompt('Введи URL шлюза ИИ (например: https://твой-туннель.trycloudflare.com)', typeof AI !== 'undefined' && AI.gateway ? AI.gateway : '');
+      if (url !== null) {
+        url = url.trim().replace(/\/$/, '');
+        if (url && !/^https?:\/\//.test(url)) url = 'https://' + url;
+        if (typeof AI !== 'undefined' && AI.setGateway) AI.setGateway(url);
+        toast('Шлюз ИИ обновлён: ' + url);
+      }
+      break;
+    }
     case 'add-custom-recipe':
       state.ui.editRecipeId = null;
       state.customRecipeDraft = null;

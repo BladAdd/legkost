@@ -221,7 +221,7 @@ async function startCloudflareTunnel() {
 async function startLocalTunnel() {
   line(C.dim + '  Открываю туннель localtunnel → ' + LOCAL + C.reset);
   line(C.dim + '  Первый запуск: npx скачает localtunnel (один раз)…' + C.reset);
-  tunnelProc = spawn('npx', ['--yes', 'localtunnel', '--port', String(PORT)], {
+  tunnelProc = spawn('npx', ['--yes', 'localtunnel', '--port', String(PORT), '--local-host', '127.0.0.1'], {
     cwd: ROOT,
     env: process.env,
     stdio: ['ignore', 'pipe', 'pipe'],

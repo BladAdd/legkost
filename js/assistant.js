@@ -181,7 +181,7 @@ async function healthOf(base, timeout) {
         headers: { 'bypass-tunnel-reminder': '1' },
         signal: AbortSignal.timeout(ms)
       });
-      if (!res.ok) return { data: null, retry: res.status === 502 || res.status === 511 || res.status >= 500 };
+      if (!res.ok) return { data: null, retry: res.status === 408 || res.status === 502 || res.status === 511 || res.status >= 500 };
       const data = await res.json();
       return { data: data && data.ok && data.ollama ? data : null, retry: false };
     } catch (e) {

@@ -34,6 +34,7 @@ function json(res, code, body) {
     'Access-Control-Allow-Origin': corsFor(res),
     'Access-Control-Allow-Headers': 'Content-Type, X-AI-Key, Bypass-Tunnel-Reminder',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Cache-Control': 'no-store',
     'Vary': 'Origin',
     'Content-Length': String(Buffer.byteLength(payload))
   });

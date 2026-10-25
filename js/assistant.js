@@ -183,8 +183,8 @@ async function healthOf(base, timeout) {
 
   async function attempt() {
     try {
-      const res = await fetch(url, {
-        cache: 'no-store',
+      // никаких cache-заголовков и кастомных полей: запрос должен остаться простым (без preflight)
+      const res = await fetch(url + '?t=' + Date.now(), {
         headers: gatewayHeaders(base),
         signal: AbortSignal.timeout(ms)
       });
@@ -338,7 +338,8 @@ async function chatCloud(messages) {
 async function chatGateway(base, messages, model) {
   const res = await fetch(String(base).replace(/\/$/, '') + '/api/ai/chat', {
     method: 'POST',
-    headers: gatewayHeaders(base, { 'Content-Type': 'application/json' }),
+    // text/plain — CORS-безопасный тип: браузер не делает preflight, а шлюз всё равно парсит JSON из тела
+    headers: gatewayHeaders(base, { 'Content-Type': 'text/plain;charset=UTF-8' }),
     body: JSON.stringify({ messages: messages, model: model || undefined, temperature: 0.4, stream: false }),
     signal: AbortSignal.timeout(120000)
   });

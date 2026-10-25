@@ -189,33 +189,48 @@ async function checkHealth() {
 
 /* ───────── ЗАПРОСЫ ───────── */
 async function chatCloud(messages) {
-  const res = await fetch(CLOUD_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: CLOUD_MODEL, messages: messages, temperature: 0.4, private: true })
-  });
-  const raw = await res.text();
-  let data = null;
-  try { data = JSON.parse(raw); } catch (e) { data = null; }
+  const payload = JSON.stringify({ model: CLOUD_MODEL, messages: messages, temperature: 0.4, private: true });
 
-  if (res.status === 402) {
-    const msg = (data && data.error && data.error.message) || '';
-    const wait = /retry after (\d+)\s*s/i.exec(msg);
-    const sec = wait ? Math.max(5, parseInt(wait[1], 10)) : 30;
-    AI.cooldownUntil = Date.now() + sec * 1000;
-    writeLS(COOLDOWN_KEY, String(AI.cooldownUntil));
-    const err = new Error('Лимит бесплатных ответов: 1 раз в 30 секунд. Подожди ' + sec + ' сек.');
-    err.cooldown = sec;
-    throw err;
+  async function attempt() {
+    const res = await fetch(CLOUD_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload
+    });
+    const raw = await res.text();
+    let data = null;
+    try { data = JSON.parse(raw); } catch (e) { data = null; }
+
+    if (res.status === 402) {
+      const msg = (data && data.error && data.error.message) || '';
+      const wait = /retry after (\d+)\s*s/i.exec(msg);
+      const sec = wait ? Math.max(5, parseInt(wait[1], 10)) : 30;
+      AI.cooldownUntil = Date.now() + sec * 1000;
+      writeLS(COOLDOWN_KEY, String(AI.cooldownUntil));
+      const err = new Error('Лимит бесплатных ответов: 1 раз в 30 секунд. Подожди ' + sec + ' сек.');
+      err.cooldown = sec;
+      throw err;
+    }
+    if (res.status >= 500) {
+      const err = new Error('облако перегружено (' + res.status + ')');
+      err.retryable = true;
+      throw err;
+    }
+    if (!res.ok) throw new Error('облако ответило ' + res.status);
+    const content = data && data.choices && data.choices[0] && data.choices[0].message
+      ? (data.choices[0].message.content || '')
+      : (typeof raw === 'string' ? raw : '');
+    if (!content.trim()) throw new Error('пустой ответ облака');
+    return content.trim();
   }
-  if (!res.ok) {
-    throw new Error('облако ответило ' + res.status);
+
+  try {
+    return await attempt();
+  } catch (e) {
+    if (!e.retryable) throw e;
+    await new Promise(function (r) { setTimeout(r, 1200); });
+    return attempt();
   }
-  const content = data && data.choices && data.choices[0] && data.choices[0].message
-    ? (data.choices[0].message.content || '')
-    : (typeof raw === 'string' ? raw : '');
-  if (!content.trim()) throw new Error('пустой ответ облака');
-  return content.trim();
 }
 
 async function chatLocal(messages) {
@@ -363,9 +378,10 @@ async function sendMessage(text) {
       AI.lastError = '';
       const local = offlineAnswer(value);
       addMessage('assistant', local, 'offline');
-      if (AI.mode === 'local') {
-        addMessage('assistant', 'Локальный шлюз недоступен (' + msg + '). Это ответ по твоему плану без ИИ.', 'note');
-      }
+      const why = AI.mode === 'local'
+        ? 'Локальный шлюз не отвечает (' + msg + ').'
+        : 'Облако не ответило (' + msg + ').';
+      addMessage('assistant', why + ' Это ответ по твоему плану без ИИ.', 'note');
     }
   } finally {
     AI.loading = false;

@@ -2,7 +2,7 @@
    Работает и в корне, и в подпапке (GitHub Pages /legkost/), потому что все пути относительные.
    Стратегия: оболочка — network-first с офлайн-фолбэком, картинки — cache-first.
 */
-const CACHE = 'legkost-v3';
+const CACHE = 'legkost-v4';
 
 const ASSETS = [
   './',
@@ -61,6 +61,7 @@ self.addEventListener('fetch', function (e) {
   if (url.origin !== self.location.origin) return;                 // шлюз ИИ и внешние ресурсы — без SW
   if (url.pathname.indexOf('/api/') !== -1) return;                // API всегда по сети
   if (url.pathname.endsWith('prices-orsk.json')) return;           // цены всегда свежие
+  if (url.pathname.endsWith('ai-endpoint.json')) return;           // адрес домашнего сервера всегда свежий
 
   // Код и стили: сначала сеть (чтобы обновления доходили), при офлайне — кэш
   const isCode = /\.(?:js|css|webmanifest)$/.test(url.pathname) || req.mode === 'navigate';

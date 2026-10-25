@@ -1503,6 +1503,15 @@ function renderLogin() {
     '</div></section>';
 }
 
+function aiStatusText() {
+  if (typeof AI === 'undefined') return 'Недоступен';
+  if (AI.mode === 'custom') return AI.customOnline ? '💻 Свой шлюз · на связи' : '💻 Свой шлюз · не отвечает';
+  if (AI.mode === 'cloud') return '☁️ Облако · бесплатно';
+  return AI.server.online
+    ? '🏠 Домашний сервер · онлайн' + (AI.server.model ? ' · ' + AI.server.model : '')
+    : '🌙 Сервер выключен · отвечает облако';
+}
+
 function renderProfile() {
   if (!currentUser) return renderAuth();
   const region = getRegion();
@@ -1537,7 +1546,10 @@ function renderProfile() {
     '<div class="stat-tile"><b>' + days + '</b><span>' + pluralize(days, ['день', 'дня', 'дней']) + '</span></div>' +
     '</div>' +
     '<div class="profile-actions"><button type="button" class="setting-row" data-action="open-recipes"><span class="setting-icon">📝</span><span class="setting-main"><span class="setting-label">Мои рецепты</span><span class="setting-value">' + (loadCustomRecipes ? loadCustomRecipes().length : 0) + ' своих блюд</span></span><span class="setting-arrow">›</span></button></div>' +
-    '<div class="profile-actions"><button type="button" class="setting-row" data-action="ai-set-gateway"><span class="setting-icon">🤖</span><span class="setting-main"><span class="setting-label">ИИ-ассистент</span><span class="setting-value">' + esc(typeof AI !== 'undefined' && AI.mode === 'local' ? 'Свой ПК · ' + AI.gateway : 'Облако · бесплатно') + '</span></span><span class="setting-arrow">›</span></button></div>' +
+    '<div class="profile-section"><div class="section-title">ИИ-помощник</div><div class="settings-card">' +
+    '<button type="button" class="setting-row" data-action="ai-toggle"><span class="setting-icon">🤖</span><span class="setting-main"><span class="setting-label">Помощник</span><span class="setting-value">' + esc(aiStatusText()) + '</span></span><span class="setting-arrow">›</span></button>' +
+    '<button type="button" class="setting-row" data-action="ai-set-gateway"><span class="setting-icon">💻</span><span class="setting-main"><span class="setting-label">Свой шлюз</span><span class="setting-value">' + esc((typeof AI !== 'undefined' && AI.gateway) ? AI.gateway : 'не задан') + '</span></span><span class="setting-arrow">›</span></button>' +
+    '</div></div>' +
     '<div class="profile-section"><div class="section-title">Настройки рациона</div><div class="settings-card">' +
     '<button type="button" class="setting-row" data-action="open-region" data-from="profile"><span class="setting-icon">📍</span><span class="setting-main"><span class="setting-label">Регион</span><span class="setting-value">' + esc(region.name) + ' · ' + availableStores().length + ' магазинов</span></span><span class="setting-arrow">›</span></button>' +
     '<button type="button" class="setting-row" data-action="edit-step" data-step="1"><span class="setting-icon">🛒</span><span class="setting-main"><span class="setting-label">Магазин</span><span class="setting-value">' + (store ? esc(store.name) : 'Не выбран') + '</span></span><span class="setting-arrow">›</span></button>' +
@@ -2911,6 +2923,9 @@ function onClick(e) {
     case 'ai-clear':
       if (typeof AI !== 'undefined' && AI.clear) AI.clear();
       break;
+    case 'ai-refresh':
+      if (typeof AI !== 'undefined' && AI.refreshServer) AI.refreshServer(true);
+      break;
     case 'ai-send': {
       const input = document.getElementById('ai-input');
       if (typeof AI !== 'undefined' && input && input.value.trim()) {
@@ -2924,12 +2939,12 @@ function onClick(e) {
       setScreen('recipes');
       break;
     case 'ai-set-gateway': {
-      var url = window.prompt('URL своего шлюза ИИ (например https://твой-туннель.trycloudflare.com).\nОставь поле пустым, чтобы вернуться в облачный режим.', (typeof AI !== 'undefined' && AI.mode === 'local') ? AI.gateway : '');
+      var url = window.prompt('URL своего шлюза ИИ (например https://твой-туннель.trycloudflare.com).\nОставь поле пустым, чтобы вернуться на домашний сервер семьи.', (typeof AI !== 'undefined' && AI.mode === 'custom') ? AI.gateway : '');
       if (url !== null) {
         url = url.trim().replace(/\/$/, '');
         if (!url) {
-          if (typeof AI !== 'undefined' && AI.setMode) AI.setMode('cloud');
-          toast('ИИ снова в облачном режиме');
+          if (typeof AI !== 'undefined' && AI.setMode) AI.setMode('server');
+          toast('Вернулся на домашний сервер');
           break;
         }
         if (!/^https?:\/\//.test(url)) url = 'https://' + url;
@@ -3387,7 +3402,12 @@ window.__legkostAI = {
   getContext: buildAIContext,
   applyAction: applyAIAction,
   isAvailable: function () { return !!state.plan; },
-  getModel: function () { return (typeof AI !== 'undefined' && AI.model) ? AI.model : 'qwen3:4b'; }
+  getModel: function () {
+    if (typeof AI === 'undefined') return 'qwen2.5:3b';
+    if (AI.mode === 'server') return AI.server.model || 'qwen2.5:3b';
+    if (AI.mode === 'custom') return AI.customModel || AI.model;
+    return AI.model;
+  }
 };
 
 /* ───────── ИНИЦИАЛИЗАЦИЯ ───────── */

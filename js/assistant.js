@@ -1,7 +1,9 @@
 /* «Лёгкость» — ИИ-помощник.
-   Два режима:
-   • cloud  — бесплатный облачный ИИ (без ключа и без ноутбука). Работает у всех посетителей.
-   • local  — свой шлюз server/ai-gateway.mjs → Ollama (быстрее и приватнее, но нужен запущенный ПК).
+   Три режима:
+   • server — домашний сервер семьи (ноут + Ollama). Адрес берётся из ai-endpoint.json,
+              который обновляет server/publish.mjs. Если ноут выключен — сам уходит в облако.
+   • cloud  — бесплатный облачный ИИ (без ключа и без ноутбука), 1 ответ / 30 секунд.
+   • custom — свой шлюз, адрес вводится в профиле.
    Если сети нет совсем — отвечает офлайн по данным плана (бюджет, БЖУ, блюда считает код).
    ИИ только предлагает действия, применяет их пользователь.
 */
@@ -13,9 +15,10 @@
 
 const CLOUD_URL = 'https://text.pollinations.ai/openai';
 const CLOUD_MODEL = 'openai-fast';
-const CLOUD_LABEL = 'GPT-OSS 20B · облако';
 const LOCAL_DEFAULT = 'http://127.0.0.1:3001';
+const ENDPOINT_FILE = 'ai-endpoint.json';
 const COOLDOWN_KEY = 'legkost.ai.cooldown';
+const SERVER_TTL = 60000;
 
 function readLS(key, fallback) {
   try {
@@ -26,15 +29,24 @@ function readLS(key, fallback) {
 function writeLS(key, value) {
   try { localStorage.setItem(key, value); } catch (e) {}
 }
+function normalizeMode(value) {
+  if (value === 'cloud') return 'cloud';
+  if (value === 'custom' || value === 'local') return 'custom';
+  return 'server';
+}
 
 const AI = {
   enabled: true,
   open: false,
   loading: false,
   available: true,
-  mode: readLS('legkost.ai.mode', 'cloud') === 'local' ? 'local' : 'cloud',
+  mode: normalizeMode(readLS('legkost.ai.mode', 'server')),
   model: CLOUD_MODEL,
   gateway: readLS('legkost.ai.gateway', '') || LOCAL_DEFAULT,
+  server: { url: '', model: '', online: false, checkedAt: 0 },
+  customOnline: false,
+  customModel: '',
+  checking: null,
   messages: [], // {role, content, ts, note}
   lastError: '',
   cooldownUntil: Number(readLS(COOLDOWN_KEY, '0')) || 0,
@@ -129,7 +141,10 @@ function paint() {
 function toggle() {
   AI.open = !AI.open;
   paint();
-  if (AI.open) scrollToBottom();
+  if (AI.open) {
+    scrollToBottom();
+    refreshServer(false);
+  }
 }
 
 function close() { AI.open = false; paint(); }
@@ -153,38 +168,103 @@ function scrollToBottom() {
   }, 60);
 }
 
-function setMode(mode) {
-  AI.mode = mode === 'local' ? 'local' : 'cloud';
-  AI.model = AI.mode === 'local' ? 'локальная модель' : CLOUD_MODEL;
-  AI.lastError = '';
-  AI.messages = [];
-  writeLS('legkost.ai.mode', AI.mode);
-  paint();
-  if (AI.mode === 'local') checkHealth().then(function (ok) {
-    if (!ok) {
-      AI.lastError = 'Локальный шлюз не отвечает. Запусти server/start-ai.bat или переключись на облако.';
-      paint();
-    } else {
-      AI.lastError = '';
-      paint();
+/* ───────── СЕРВЕР СЕМЬИ ───────── */
+async function healthOf(base, timeout) {
+  if (!base) return null;
+  try {
+    const res = await fetch(String(base).replace(/\/$/, '') + '/api/ai/health', {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(timeout || 3000)
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data && data.ok && data.ollama ? data : null;
+  } catch (e) { return null; }
+}
+
+function refreshServer(force) {
+  if (AI.checking) return AI.checking;
+  const now = Date.now();
+  if (!force && now - AI.server.checkedAt < SERVER_TTL) return Promise.resolve(AI.server);
+
+  AI.checking = (async function () {
+    let gateway = '';
+    try {
+      const res = await fetch(ENDPOINT_FILE + '?t=' + now, {
+        cache: 'no-store',
+        signal: AbortSignal.timeout(5000)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        gateway = String(data.gateway || '').trim().replace(/\/$/, '');
+        if (gateway && data.model) AI.server.model = data.model;
+      }
+    } catch (e) { gateway = AI.server.url || ''; }
+
+    AI.server.checkedAt = Date.now();
+    if (!gateway) {
+      AI.server.url = '';
+      AI.server.online = false;
+      return AI.server;
     }
+    AI.server.url = gateway;
+    const data = await healthOf(gateway, 3500);
+    AI.server.online = !!data;
+    if (data && data.model) AI.server.model = data.model;
+    if (AI.server.online) AI.model = AI.server.model || AI.model;
+    return AI.server;
+  })().finally(function () {
+    AI.checking = null;
+    paint();
+  });
+
+  return AI.checking;
+}
+
+function checkCustom() {
+  return healthOf(AI.gateway, 3000).then(function (data) {
+    AI.customOnline = !!data;
+    if (data && data.model) AI.customModel = data.model;
+    paint();
+    return AI.customOnline;
   });
 }
 
-function setGateway(url) {
-  AI.gateway = url || LOCAL_DEFAULT;
-  writeLS('legkost.ai.gateway', AI.gateway);
-  setMode('local');
+/* ───────── РЕЖИМЫ ───────── */
+function setMode(mode) {
+  const next = mode === 'cloud' ? 'cloud' : (mode === 'custom' ? 'custom' : 'server');
+  AI.lastError = '';
+
+  // повторный клик по активному режиму = проверить связь ещё раз
+  if (AI.mode === next) {
+    if (next === 'server') refreshServer(true);
+    if (next === 'custom') checkCustom();
+    paint();
+    return;
+  }
+
+  AI.mode = next;
+  AI.messages = [];
+  writeLS('legkost.ai.mode', next);
+  paint();
+  if (next === 'server') refreshServer(true);
+  if (next === 'custom') checkCustom();
 }
 
-async function checkHealth() {
-  try {
-    const res = await fetch(AI.gateway + '/api/ai/health', { cache: 'no-store' });
-    if (!res.ok) throw new Error('health ' + res.status);
-    const data = await res.json();
-    if (data.model) AI.model = data.model;
-    return !!(data.ok && data.ollama);
-  } catch (e) { return false; }
+function setGateway(url) {
+  AI.gateway = (url || LOCAL_DEFAULT).replace(/\/$/, '');
+  writeLS('legkost.ai.gateway', AI.gateway);
+  setMode('custom');
+}
+
+function setServerUrl(url) {
+  AI.server.url = (url || '').replace(/\/$/, '');
+  AI.server.online = false;
+  AI.server.checkedAt = 0;
+  writeLS('legkost.ai.mode', 'server');
+  AI.mode = 'server';
+  paint();
+  return refreshServer(true);
 }
 
 /* ───────── ЗАПРОСЫ ───────── */
@@ -233,18 +313,32 @@ async function chatCloud(messages) {
   }
 }
 
-async function chatLocal(messages) {
-  const res = await fetch(AI.gateway + '/api/ai/chat', {
+async function chatGateway(base, messages, model) {
+  const res = await fetch(String(base).replace(/\/$/, '') + '/api/ai/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages: messages, model: AI.model, temperature: 0.4, stream: false })
+    body: JSON.stringify({ messages: messages, model: model || undefined, temperature: 0.4, stream: false }),
+    signal: AbortSignal.timeout(120000)
   });
-  if (!res.ok) throw new Error('шлюз ответил ' + res.status);
+  if (!res.ok) throw new Error('сервер ответил ' + res.status);
   const data = await res.json();
-  if (!data.ok) throw new Error(data.error || 'ошибка шлюза');
+  if (!data.ok) throw new Error(data.error || 'ошибка сервера');
   if (!data.content) throw new Error('пустой ответ модели');
-  if (data.model) AI.model = data.model;
-  return data.content;
+  return { content: data.content, model: data.model || model || '' };
+}
+
+function chatServer(messages) {
+  return chatGateway(AI.server.url, messages, AI.server.model).then(function (r) {
+    if (r.model) AI.server.model = r.model;
+    return r.content;
+  });
+}
+
+function chatCustom(messages) {
+  return chatGateway(AI.gateway, messages, AI.customModel).then(function (r) {
+    if (r.model) AI.customModel = r.model;
+    return r.content;
+  });
 }
 
 /* ───────── ОФЛАЙН-ОТВЕТ (без сети) ───────── */
@@ -321,18 +415,14 @@ function startCooldownTicker() {
   cooldownTimer = setInterval(function () {
     const el = document.querySelector('#ai-root .ai-status');
     const left = cooldownLeft();
-    if (el) {
-      if (left > 0) {
-        el.className = 'ai-status warn';
-        el.textContent = '⏳ Бесплатный лимит · ещё ' + left + ' сек.';
-      } else {
-        el.className = 'ai-status ok';
-        el.textContent = AI.mode === 'local' ? '✓ Локальный шлюз · ' + AI.model : '✓ Облачный помощник · бесплатно';
-      }
+    if (el && left > 0) {
+      el.className = 'ai-status warn';
+      el.textContent = '⏳ Бесплатный лимит · ещё ' + left + ' сек.';
     }
     if (left <= 0) {
       clearInterval(cooldownTimer);
       cooldownTimer = null;
+      paint();
     }
   }, 1000);
 }
@@ -342,12 +432,6 @@ async function sendMessage(text) {
   const value = String(text || '').trim();
   if (!value) return;
 
-  const left = cooldownLeft();
-  if (left > 0) {
-    addMessage('assistant', 'Секунду — бесплатный ИИ отвечает раз в 30 секунд. Осталось ' + left + ' сек.', 'wait');
-    return;
-  }
-
   AI.loading = true;
   addMessage('user', value);
 
@@ -356,15 +440,50 @@ async function sendMessage(text) {
   if (context) messages.push({ role: 'system', content: context });
   // последние 6 реплик для связного диалога
   AI.messages.slice(-7, -1).forEach(function (m) {
-    if (m.note === 'offline' || m.note === 'wait') return;
+    if (m.note === 'offline' || m.note === 'wait' || m.note === 'note') return;
     messages.push({ role: m.role, content: m.content });
   });
   messages.push({ role: 'user', content: value });
 
+  function cloudBlocked() {
+    const left = cooldownLeft();
+    if (left > 0) {
+      addMessage('assistant', 'Секунду — бесплатное облако отвечает раз в 30 секунд. Осталось ' + left + ' сек.', 'wait');
+      startCooldownTicker();
+      return true;
+    }
+    return false;
+  }
+
   try {
-    const content = AI.mode === 'local'
-      ? await chatLocal(messages)
-      : await chatCloud(messages);
+    let content = '';
+
+    if (AI.mode === 'server') {
+      if (!AI.server.online) await refreshServer(true);
+      if (AI.server.online) {
+        try {
+          content = await chatServer(messages);
+        } catch (e) {
+          AI.server.online = false;
+        }
+      }
+      if (!content) {
+        if (cloudBlocked()) return;
+        content = await chatCloud(messages);
+      }
+    } else if (AI.mode === 'custom') {
+      try {
+        content = await chatCustom(messages);
+      } catch (e) {
+        AI.customOnline = false;
+        if (cloudBlocked()) return;
+        content = await chatCloud(messages);
+      }
+    } else {
+      if (cloudBlocked()) return;
+      content = await chatCloud(messages);
+    }
+
     AI.lastError = '';
     addMessage('assistant', content);
     parseActions(content);
@@ -376,11 +495,10 @@ async function sendMessage(text) {
       startCooldownTicker();
     } else {
       AI.lastError = '';
-      const local = offlineAnswer(value);
-      addMessage('assistant', local, 'offline');
-      const why = AI.mode === 'local'
-        ? 'Локальный шлюз не отвечает (' + msg + ').'
-        : 'Облако не ответило (' + msg + ').';
+      addMessage('assistant', offlineAnswer(value), 'offline');
+      const why = AI.mode === 'server'
+        ? 'Сервер и облако не ответили (' + msg + ').'
+        : (AI.mode === 'custom' ? 'Свой шлюз и облако не ответили (' + msg + ').' : 'Облако не ответило (' + msg + ').');
       addMessage('assistant', why + ' Это ответ по твоему плану без ИИ.', 'note');
     }
   } finally {
@@ -427,18 +545,33 @@ function parseActions(text) {
 }
 
 /* ───────── HTML ───────── */
+function servingFromCloud() {
+  return AI.mode === 'cloud' || (AI.mode === 'server' && !AI.server.online);
+}
+
 function statusHTML() {
   const left = cooldownLeft();
-  if (left > 0) {
+  if (left > 0 && servingFromCloud()) {
     return '<div class="ai-status warn">⏳ Бесплатный лимит · ещё ' + left + ' сек.</div>';
   }
   if (AI.lastError) {
     return '<div class="ai-status warn">⚠️ ' + esc(AI.lastError) + '</div>';
   }
-  if (AI.mode === 'local') {
-    return '<div class="ai-status ok">✓ Локальный шлюз · ' + esc(AI.model) + '</div>';
+  if (AI.mode === 'server') {
+    if (AI.server.online) {
+      return '<div class="ai-status ok">🏠 Сервер семьи' + (AI.server.model ? ' · ' + esc(AI.server.model) : '') + ' · без лимитов</div>';
+    }
+    return '<div class="ai-status info">🌙 Сервер выключен · отвечает облако' +
+      '<button type="button" class="ai-link" data-action="ai-refresh" title="Проверить сервер ещё раз">проверить</button></div>';
   }
-  return '<div class="ai-status ok">✓ Облачный помощник · бесплатно</div>';
+  if (AI.mode === 'custom') {
+    if (AI.customOnline) {
+      return '<div class="ai-status ok">💻 Свой шлюз' + (AI.customModel ? ' · ' + esc(AI.customModel) : '') + '</div>';
+    }
+    return '<div class="ai-status info">💻 Свой шлюз не отвечает · отвечает облако' +
+      '<button type="button" class="ai-link" data-action="ai-refresh">проверить</button></div>';
+  }
+  return '<div class="ai-status ok">☁️ Облако · бесплатно · 1 ответ / 30 сек.</div>';
 }
 
 function render() {
@@ -446,11 +579,15 @@ function render() {
   if (!AI.open) {
     return '<button type="button" class="ai-chat-open" data-action="ai-toggle">🤖 Помощник</button>';
   }
-  const header = '<div class="ai-header"><span class="ai-title">🤖 Помощник</span>' +
-    '<button type="button" class="ai-chat-close" data-action="ai-close">Закрыть</button></div>';
+  const header = '<div class="ai-header">' +
+    '<span class="ai-title">🤖 Помощник</span>' +
+    '<div class="ai-head-actions">' +
+    (AI.messages.length ? '<button type="button" class="ai-clear" data-action="ai-clear">Очистить</button>' : '') +
+    '<button type="button" class="ai-chat-close" data-action="ai-close">Закрыть</button>' +
+    '</div></div>';
 
   const msgs = AI.messages.map(function (m) {
-    const cls = 'ai-msg ai-' + m.role + (m.note === 'offline' ? ' ai-offline' : '');
+    const cls = 'ai-msg ai-' + m.role + (m.note === 'offline' ? ' ai-offline' : '') + (m.note === 'note' ? ' ai-note' : '');
     const time = new Date(m.ts).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
     return '<div class="' + cls + '"><div class="ai-msg-bubble">' + formatMessage(m.content) + '</div><div class="ai-msg-time">' + time + '</div></div>';
   }).join('');
@@ -460,21 +597,29 @@ function render() {
   }).join('');
 
   const modeRow = '<div class="ai-mode">' +
-    '<button type="button" class="ai-mode-btn' + (AI.mode === 'cloud' ? ' active' : '') + '" data-action="ai-mode" data-mode="cloud">🌐 Облако</button>' +
-    '<button type="button" class="ai-mode-btn' + (AI.mode === 'local' ? ' active' : '') + '" data-action="ai-mode" data-mode="local">💻 Свой ПК</button>' +
+    '<button type="button" class="ai-mode-btn' + (AI.mode === 'server' ? ' active' : '') + '" data-action="ai-mode" data-mode="server" title="Домашний сервер семьи — без лимитов">🏠 Сервер</button>' +
+    '<button type="button" class="ai-mode-btn' + (AI.mode === 'cloud' ? ' active' : '') + '" data-action="ai-mode" data-mode="cloud" title="Бесплатное облако — 1 ответ в 30 секунд">☁️ Облако</button>' +
+    '<button type="button" class="ai-mode-btn' + (AI.mode === 'custom' ? ' active' : '') + '" data-action="ai-mode" data-mode="custom" title="Свой шлюз (адрес в профиле)">💻 Свой</button>' +
     '</div>';
+
+  const serverOnline = AI.mode === 'server' && AI.server.online;
+  const emptyHint = serverOnline
+    ? 'Домашний сервер на связи: отвечаю без лимитов, и запросы не уходят в облако.'
+    : 'Спроси про бюджет, белок, покупки или что приготовить сегодня. Я вижу твой план и считаю по нему.';
 
   const body = AI.messages.length
     ? '<div class="ai-messages" id="ai-messages">' + msgs + '</div>'
     : '<div class="ai-empty" id="ai-messages">' +
-      '<div class="ai-empty-emoji">🤖</div>' +
-      '<p>Спроси про бюджет, белок, покупки или что приготовить сегодня. Я вижу твой план и считаю по нему.</p>' +
+      '<div class="ai-empty-emoji">' + (serverOnline ? '🏠' : '🤖') + '</div>' +
+      '<p>' + emptyHint + '</p>' +
       '<p class="ai-empty-note">Бюджет и БЖУ считает сам сайт — ИИ только советует.</p>' +
       '</div>';
 
-  const privacy = AI.mode === 'local'
-    ? 'Локальный режим: запросы идут только на твой ПК, данные не покидают устройство.'
-    : 'Облачный режим: текст запроса и план недели уходят на внешний бесплатный сервис. Нужна приватность — переключись на «Свой ПК».';
+  const privacy = serverOnline
+    ? 'Отвечает домашний сервер семьи: план не покидает дом. Бюджет и БЖУ считает сайт.'
+    : (AI.mode === 'custom'
+      ? 'Свой шлюз: запрос уходит только на указанный адрес. Бюджет и БЖУ считает сайт.'
+      : 'Облако: текст запроса и план недели уходят на внешний бесплатный сервис. Бюджет и БЖУ считает сайт.');
 
   return '<div class="ai-panel">' +
     header +
@@ -488,7 +633,7 @@ function render() {
     '<input type="text" id="ai-input" placeholder="Спроси помощника…" data-action="ai-input"' + (AI.loading ? ' disabled' : '') + '>' +
     '<button type="button" class="ai-send" data-action="ai-send"' + (AI.loading ? ' disabled' : '') + '>Отправить</button>' +
     '</div>' +
-    '<p class="ai-disclaimer">' + privacy + ' Советы ИИ могут быть неточными — цены и БЖУ проверяй в карточках блюд.</p>' +
+    '<p class="ai-disclaimer">Советы ИИ могут быть неточными — цены и БЖУ проверяй в карточках блюд.</p>' +
     '</div>';
 }
 
@@ -502,16 +647,9 @@ function handleInput(e) {
 
 function init() {
   document.addEventListener('keydown', handleInput);
-  // Локальный режим: проверяем шлюз один раз. Облако проверяем первым запросом,
-  // чтобы не тратить бесплатный лимит на health-check.
-  if (AI.mode === 'local') {
-    checkHealth().then(function (ok) {
-      if (!ok) {
-        AI.lastError = 'Локальный шлюз не отвечает. Запусти server/start-ai.bat или переключись на облако.';
-      }
-      paint();
-    });
-  }
+  window.addEventListener('online', function () { refreshServer(true); });
+  refreshServer(false);
+  if (AI.mode === 'custom') checkCustom();
 }
 
 window.LegkostAI = AI;
@@ -525,5 +663,7 @@ AI.quick = quickSend;
 AI.render = render;
 AI.setMode = setMode;
 AI.setGateway = setGateway;
+AI.setServerUrl = setServerUrl;
+AI.refreshServer = refreshServer;
 
 })();

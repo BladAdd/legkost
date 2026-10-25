@@ -2,5 +2,7 @@
 .env.local
 *.local
 node_modules/
+server/bin/
+server/runtime.json
 .DS_Store
 Thumbs.db

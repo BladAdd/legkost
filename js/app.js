@@ -1821,7 +1821,9 @@ function macroProgressHTML(macros, targets, title, subtitle) {
     const value = Math.round((macros && macros[row.key]) || 0);
     const target = Math.max(1, Math.round((targets && targets[row.key]) || 1));
     const pct = value / target * 100;
-    const stateClass = pct < 80 ? 'low' : pct > 120 ? 'high' : 'ok';
+    let stateClass = pct < 80 ? 'low' : pct > 120 ? 'high' : 'ok';
+    /* Больше белка — это не ошибка: не подсвечиваем превышение красным. */
+    if (row.key === 'p' && stateClass === 'high') stateClass = 'ok';
     if (stateClass !== 'ok') allOk = false;
     return '<div class="macro-progress-row">' +
       '<div class="macro-progress-top"><span class="macro-progress-name"><i style="background:' + row.color + '"></i>' + row.name + '</span>' +

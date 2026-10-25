@@ -156,15 +156,34 @@ function waitForUrl(parse, timeoutMs, hint) {
 
 async function verifyTunnel(url) {
   line(C.dim + '  Проверяю доступность из интернета…' + C.reset);
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 40; i++) {
     const data = await health(url, 8000);
     if (data) {
-      ok('Туннель работает · снаружи видно модель ' + (data.model || 'неизвестна'));
-      return data;
+      const cors = await corsOk(url);
+      if (cors) {
+        ok('Туннель работает · снаружи видно модель ' + (data.model || 'неизвестна'));
+        return data;
+      }
+      line(C.dim + '  Шлюз отвечает, жду готовности CORS для сайта…' + C.reset);
     }
     await sleep(2000);
   }
   throw new Error('адрес выдан, но снаружи шлюз не отвечает. Проверь интернет и firewall.');
+}
+
+async function corsOk(url) {
+  try {
+    const res = await fetch(url.replace(/\/$/, '') + '/api/ai/health', {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'https://bladadd.github.io',
+        'Access-Control-Request-Method': 'GET',
+        'Access-Control-Request-Headers': 'bypass-tunnel-reminder'
+      },
+      signal: AbortSignal.timeout(6000)
+    });
+    return res.ok && res.headers.get('access-control-allow-origin') === 'https://bladadd.github.io';
+  } catch (e) { return false; }
 }
 
 function attachTunnelExit() {

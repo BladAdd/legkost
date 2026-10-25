@@ -171,16 +171,30 @@ function scrollToBottom() {
 /* ───────── СЕРВЕР СЕМЬИ ───────── */
 async function healthOf(base, timeout) {
   if (!base) return null;
-  try {
-    const res = await fetch(String(base).replace(/\/$/, '') + '/api/ai/health', {
-      cache: 'no-store',
-      headers: { 'bypass-tunnel-reminder': '1' },
-      signal: AbortSignal.timeout(timeout || 3000)
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data && data.ok && data.ollama ? data : null;
-  } catch (e) { return null; }
+  const url = String(base).replace(/\/$/, '') + '/api/ai/health';
+  const ms = timeout || 3000;
+
+  async function attempt() {
+    try {
+      const res = await fetch(url, {
+        cache: 'no-store',
+        headers: { 'bypass-tunnel-reminder': '1' },
+        signal: AbortSignal.timeout(ms)
+      });
+      if (!res.ok) return { data: null, retry: res.status === 502 || res.status === 511 || res.status >= 500 };
+      const data = await res.json();
+      return { data: data && data.ok && data.ollama ? data : null, retry: false };
+    } catch (e) {
+      // таймаут = сервер выключен, повторять долго не нужно
+      return { data: null, retry: !(e && (e.name === 'TimeoutError' || e.name === 'AbortError')) };
+    }
+  }
+
+  const first = await attempt();
+  if (first.data) return first.data;
+  if (!first.retry) return null;
+  await new Promise(function (r) { setTimeout(r, 900); });
+  return (await attempt()).data;
 }
 
 function refreshServer(force) {

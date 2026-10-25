@@ -9,7 +9,7 @@ echo.
 echo   Л Ё Г К О С Т Ь  ·  домашний сервер ИИ
 echo   ------------------------------------
 echo   Модель: %AI_MODEL%
-echo   Туннель: localtunnel (npx скачает при первом запуске)
+echo   Туннель: localhost.run через SSH
 echo   Если модели нет: ollama pull %AI_MODEL%
 echo   Остановить: Ctrl+C
 echo.

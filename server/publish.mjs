@@ -3,7 +3,7 @@
 
    Что делает:
    1. Поднимает шлюз к Ollama (server/ai-gateway.mjs), если он ещё не запущен.
-   2. Открывает публичный туннель localtunnel и получает адрес https://….loca.lt
+   2. Открывает публичный туннель localhost.run и получает адрес https://….lhr.life
    3. Проверяет, что сайт может достучаться до шлюза.
    4. Записывает адрес в ai-endpoint.json и пушит его в GitHub —
       GitHub Pages раздаёт файл всем посетителям, и сайт сам переключается на твой ноут.
@@ -13,7 +13,7 @@
    Переменные окружения:
      PORT          — порт шлюза (3001)
      AI_PUBLISH    — 0, чтобы не коммитить адрес в git
-     AI_TUNNEL     — local (по умолчанию), cloudflare или 0 (только шлюз)
+     AI_TUNNEL     — lhr (по умолчанию), local, cloudflare или 0 (только шлюз)
 */
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -25,8 +25,11 @@ const ROOT = resolve(__dirname, '..');
 const PORT = Number(process.env.PORT) || 3001;
 const LOCAL = 'http://127.0.0.1:' + PORT;
 const PUBLISH = process.env.AI_PUBLISH !== '0';
-const TUNNEL_MODE = (process.env.AI_TUNNEL || 'local').toLowerCase() === 'cloudflare' ? 'cloudflare' : 'local';
-const WANT_TUNNEL = !['0', 'off', 'none'].includes((process.env.AI_TUNNEL || 'local').toLowerCase());
+const TUNNEL_RAW = (process.env.AI_TUNNEL || 'lhr').toLowerCase();
+const TUNNEL_MODE = TUNNEL_RAW === 'cloudflare' ? 'cloudflare'
+  : (TUNNEL_RAW === 'local' || TUNNEL_RAW === 'localtunnel') ? 'local'
+  : 'lhr';
+const WANT_TUNNEL = !['0', 'off', 'none'].includes(TUNNEL_RAW);
 const ENDPOINT_FILE = join(ROOT, 'ai-endpoint.json');
 
 const C = {
@@ -57,13 +60,18 @@ async function health(url, timeoutMs = 4000) {
   try {
     const res = await fetch(url.replace(/\/$/, '') + '/api/ai/health', {
       cache: 'no-store',
-      headers: { 'bypass-tunnel-reminder': '1' },
+      headers: tunnelHeaders(url),
       signal: AbortSignal.timeout(timeoutMs)
     });
     if (!res.ok) return null;
     const data = await res.json();
     return data && data.ok && data.ollama ? data : null;
   } catch (e) { return null; }
+}
+
+/* localtunnel показывает браузерам заглушку; localhost.run — нет */
+function tunnelHeaders(url) {
+  return /\.loca\.lt$/i.test(String(url)) ? { 'bypass-tunnel-reminder': '1' } : {};
 }
 
 /* ───────── ШЛЮЗ ───────── */
@@ -135,11 +143,13 @@ async function ensureCloudflared() {
 function waitForUrl(parse, timeoutMs, hint) {
   return new Promise((resolveUrl, reject) => {
     let settled = false;
+    let earlyError = null;
     const finish = (fn, value) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       if (earlyExit) tunnelProc.removeListener('exit', earlyExit);
+      if (earlyError) tunnelProc.removeListener('error', earlyError);
       fn(value);
     };
     const timer = setTimeout(() => finish(reject, new Error(hint)), timeoutMs);
@@ -148,9 +158,11 @@ function waitForUrl(parse, timeoutMs, hint) {
       if (found) finish(resolveUrl, found);
     };
     const earlyExit = code => finish(reject, new Error('туннель закрылся (код ' + code + ')'));
+    earlyError = err => finish(reject, new Error('не удалось запустить туннель: ' + err.message));
     tunnelProc.stdout.on('data', onData);
     tunnelProc.stderr.on('data', onData);
     tunnelProc.on('exit', earlyExit);
+    tunnelProc.on('error', earlyError);
   });
 }
 
@@ -241,8 +253,39 @@ async function startLocalTunnel() {
   return verifyTunnel(url);
 }
 
+async function startLocalhostRun() {
+  line(C.dim + '  Открываю туннель localhost.run → ' + LOCAL + C.reset);
+  tunnelProc = spawn('ssh', [
+    '-o', 'StrictHostKeyChecking=accept-new',
+    '-o', 'ServerAliveInterval=30',
+    '-o', 'ServerAliveCountMax=3',
+    '-o', 'ExitOnForwardFailure=yes',
+    '-o', 'BatchMode=yes',
+    '-R', '80:127.0.0.1:' + PORT,
+    'nokey@localhost.run'
+  ], {
+    cwd: ROOT,
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  const url = await waitForUrl(
+    chunk => {
+      const m = /https:\/\/[a-z0-9]+\.lhr\.life/i.exec(chunk.toString());
+      return m ? m[0] : '';
+    },
+    90000,
+    'localhost.run не выдал адрес за 90 секунд. Проверь SSH и интернет'
+  );
+  publicUrl = url;
+  ok('Публичный адрес: ' + C.bold + url + C.reset);
+  attachTunnelExit();
+  return verifyTunnel(url);
+}
+
 async function startTunnel() {
-  return TUNNEL_MODE === 'cloudflare' ? startCloudflareTunnel() : startLocalTunnel();
+  if (TUNNEL_MODE === 'cloudflare') return startCloudflareTunnel();
+  if (TUNNEL_MODE === 'local') return startLocalTunnel();
+  return startLocalhostRun();
 }
 
 function scheduleTunnelRestart(delay) {

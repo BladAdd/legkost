@@ -169,6 +169,13 @@ function scrollToBottom() {
 }
 
 /* ───────── СЕРВЕР СЕМЬИ ───────── */
+/* localtunnel показывает браузерам заглушку; localhost.run — нет */
+function gatewayHeaders(base, extra) {
+  const headers = Object.assign({}, extra || {});
+  if (/\.loca\.lt$/i.test(String(base))) headers['bypass-tunnel-reminder'] = '1';
+  return headers;
+}
+
 async function healthOf(base, timeout) {
   if (!base) return null;
   const url = String(base).replace(/\/$/, '') + '/api/ai/health';
@@ -178,7 +185,7 @@ async function healthOf(base, timeout) {
     try {
       const res = await fetch(url, {
         cache: 'no-store',
-        headers: { 'bypass-tunnel-reminder': '1' },
+        headers: gatewayHeaders(base),
         signal: AbortSignal.timeout(ms)
       });
       if (!res.ok) return { data: null, retry: res.status === 408 || res.status === 502 || res.status === 511 || res.status >= 500 };
@@ -331,7 +338,7 @@ async function chatCloud(messages) {
 async function chatGateway(base, messages, model) {
   const res = await fetch(String(base).replace(/\/$/, '') + '/api/ai/chat', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'bypass-tunnel-reminder': '1' },
+    headers: gatewayHeaders(base, { 'Content-Type': 'application/json' }),
     body: JSON.stringify({ messages: messages, model: model || undefined, temperature: 0.4, stream: false }),
     signal: AbortSignal.timeout(120000)
   });

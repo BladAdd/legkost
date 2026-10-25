@@ -7,7 +7,8 @@
    3. Проверяет, что сайт может достучаться до шлюза.
    4. Записывает адрес в ai-endpoint.json и пушит его в GitHub —
       GitHub Pages раздаёт файл всем посетителям, и сайт сам переключается на твой ноут.
-   5. Держит туннель живым: если он упал, поднимает новый и перепубликует адрес.
+   5. Держит туннель живым: каждые 30 секунд проверяет публичный адрес,
+      а если туннель умер молча — поднимает новый и перепубликует адрес.
    6. По Ctrl+C снимает адрес с сайта (все вернутся в облачный режим).
 
    Переменные окружения:
@@ -42,6 +43,9 @@ let tunnelProc = null;
 let publicUrl = '';
 let stopping = false;
 let restartTimer = null;
+let restartingTunnel = false;
+let watchdogTimer = null;
+let tunnelFails = 0;
 
 function line(text) { console.log(text); }
 function ok(text) { line(C.green + '✓ ' + C.reset + text); }
@@ -199,8 +203,9 @@ async function corsOk(url) {
 }
 
 function attachTunnelExit() {
-  tunnelProc.on('exit', code => {
-    if (stopping) return;
+  const proc = tunnelProc;
+  proc.on('exit', code => {
+    if (stopping || restartingTunnel || proc !== tunnelProc) return;
     fail('Туннель закрылся (код ' + code + '). Перезапускаю через 5 секунд…');
     scheduleTunnelRestart();
   });
@@ -302,6 +307,45 @@ function scheduleTunnelRestart(delay) {
   }, delay || 5000);
 }
 
+/* Туннель может «умереть» молча: SSH-процесс жив, а снаружи уже 502.
+   Раз в 30 секунд проверяем публичный адрес и после трёх провалов перезапускаем туннель. */
+function startWatchdog() {
+  if (watchdogTimer) return;
+  watchdogTimer = setInterval(checkTunnel, 30000);
+}
+
+async function checkTunnel() {
+  if (stopping || restartingTunnel || restartTimer || !publicUrl) return;
+  const data = await health(publicUrl, 8000);
+  if (data) {
+    tunnelFails = 0;
+    return;
+  }
+  tunnelFails++;
+  if (tunnelFails < 3) {
+    warn('Туннель не отвечает (' + tunnelFails + '/3) — проверяю ещё раз…');
+    return;
+  }
+  fail('Туннель перестал отвечать. Перезапускаю…');
+  await restartTunnel();
+}
+
+async function restartTunnel() {
+  if (stopping || restartingTunnel) return;
+  restartingTunnel = true;
+  tunnelFails = 0;
+  try {
+    killTree(tunnelProc);
+    const data = await startTunnel();
+    restartingTunnel = false;
+    publishPublic(data);
+  } catch (e) {
+    restartingTunnel = false;
+    fail(String(e.message || e));
+    scheduleTunnelRestart(15000);
+  }
+}
+
 /* ───────── ПУБЛИКАЦИЯ АДРЕСА В GIT ───────── */
 function readEndpoint() {
   try { return JSON.parse(readFileSync(ENDPOINT_FILE, 'utf8')); } catch (e) { return {}; }
@@ -324,6 +368,7 @@ function git(args) {
 }
 
 function publishPublic(data) {
+  startWatchdog();
   const previous = readEndpoint();
   const payload = writeEndpoint(publicUrl, data && data.model);
   if (previous.gateway === payload.gateway && previous.model === payload.model) {
@@ -381,6 +426,7 @@ function shutdown(code) {
   if (stopping) return;
   stopping = true;
   if (restartTimer) clearTimeout(restartTimer);
+  if (watchdogTimer) clearInterval(watchdogTimer);
   line('');
   warn('Останавливаюсь…');
   killTree(tunnelProc);

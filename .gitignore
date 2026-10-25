@@ -4,5 +4,6 @@
 node_modules/
 server/bin/
 server/runtime.json
+server/.publish.pid
 .DS_Store
 Thumbs.db

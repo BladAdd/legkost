@@ -17,7 +17,7 @@
      AI_TUNNEL     — lhr (по умолчанию), local, cloudflare или 0 (только шлюз)
 */
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -32,6 +32,7 @@ const TUNNEL_MODE = TUNNEL_RAW === 'cloudflare' ? 'cloudflare'
   : 'lhr';
 const WANT_TUNNEL = !['0', 'off', 'none'].includes(TUNNEL_RAW);
 const ENDPOINT_FILE = join(ROOT, 'ai-endpoint.json');
+const LOCK_FILE = join(__dirname, '.publish.pid');
 
 const C = {
   reset: '\u001b[0m', bold: '\u001b[1m', dim: '\u001b[2m',
@@ -426,11 +427,38 @@ function shutdown(code) {
   killTree(tunnelProc);
   unpublish();
   killTree(gatewayProc);
+  try { unlinkSync(LOCK_FILE); } catch (e) {}
   setTimeout(() => process.exit(code || 0), 300);
 }
 
 process.on('SIGINT', () => shutdown(0));
 process.on('SIGTERM', () => shutdown(0));
+
+/* ───────── ЗАЩИТА ОТ ВТОРОГО ЗАПУСКА ───────── */
+function readLockPid() {
+  try { return parseInt(readFileSync(LOCK_FILE, 'utf8'), 10) || 0; } catch (e) { return 0; }
+}
+
+function nodeAlive(pid) {
+  if (!pid) return false;
+  try { process.kill(pid, 0); } catch (e) { if (e.code !== 'EPERM') return false; }
+  try {
+    if (process.platform === 'win32') {
+      const out = spawnSync('tasklist', ['/FI', 'PID eq ' + pid, '/FO', 'CSV', '/NH'], { encoding: 'utf8' });
+      return /node\.exe/i.test(out.stdout || '');
+    }
+    const out = spawnSync('ps', ['-p', String(pid), '-o', 'comm='], { encoding: 'utf8' });
+    return /node/i.test(out.stdout || '');
+  } catch (e) { return true; }
+}
+
+const otherPid = readLockPid();
+if (otherPid && otherPid !== process.pid && nodeAlive(otherPid)) {
+  warn('Сервер уже запущен (PID ' + otherPid + ').');
+  line('  Остановить: server\\stop-ai.bat');
+  process.exit(2);
+}
+writeFileSync(LOCK_FILE, String(process.pid) + '\n', 'utf8');
 
 /* ───────── СТАРТ ───────── */
 banner();
@@ -447,7 +475,7 @@ if (WANT_TUNNEL) {
     publishPublic(data);
     line('');
     line(C.green + C.bold + '  Готово. ИИ работает у всех посетителей через твой ноут.' + C.reset);
-    line(C.dim + '  Сайт: https://bladadd.github.io/legkost/  ·  Остановить: Ctrl+C' + C.reset);
+    line(C.dim + '  Сайт: https://bladadd.github.io/legkost/  ·  Остановить: Ctrl+C или server\\stop-ai.bat' + C.reset);
     line(C.dim + '  Ноут должен быть включён. Если выключить — сайт сам уйдёт в облако.' + C.reset);
     line('');
   } catch (e) {

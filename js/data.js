@@ -1033,8 +1033,449 @@ const DISHES = [
 const INGREDIENT_MAP = {};
 INGREDIENTS.forEach(function (ing) { INGREDIENT_MAP[ing.id] = ing; });
 
+/* ───────── БОЛЬШАЯ БАЗА БЛЮД ─────────
+   Сотни сочетаний из проверенных продуктов: белок + гарнир + овощи,
+   каши, омлеты, тосты, запеканки, супы, салаты и котлеты.
+   КБЖУ считается по таблице на 100 г, а не выдумывается. */
+const MACRO100 = {
+  chicken_fillet: [165, 31, 3.6, 0], turkey: [104, 19, 2, 0], beef: [187, 19, 14, 0],
+  pork: [263, 27, 17, 0], liver: [135, 21, 3, 5], minced_chicken: [143, 17, 8, 0],
+  salmon: [208, 20, 13, 0], cod: [82, 18, 0.7, 0], pollock: [72, 16, 1, 0], shrimp: [99, 24, 0.3, 0],
+  cottage_cheese: [121, 17, 5, 3], yogurt: [60, 10, 3.5, 4], milk: [52, 3, 2.5, 4.7],
+  kefir: [40, 3, 1, 4], cheese: [364, 25, 29, 2], butter: [717, 0.5, 81, 0.1],
+  sour_cream: [206, 2.5, 20, 3], cream: [205, 2.5, 20, 3],
+  potato: [77, 2, 0.1, 17], onion: [40, 1.7, 0.1, 9], carrot: [41, 0.9, 0.2, 10],
+  zucchini: [17, 0.6, 0.3, 3], pumpkin: [26, 1, 0.1, 6.5], broccoli: [34, 2.8, 0.4, 7],
+  tomato: [18, 0.9, 0.2, 3.9], cucumber: [15, 0.8, 0.1, 3.6], pepper: [27, 1, 0.3, 6],
+  cabbage: [25, 1.3, 0.1, 6], beet: [43, 1.6, 0.2, 10], eggplant: [25, 1, 0.2, 6],
+  mushrooms: [27, 4.3, 0.1, 3.3], greens: [36, 3, 0.8, 6], garlic: [149, 6.5, 0.5, 33],
+  spinach: [23, 2.9, 0.4, 3.6], green_peas: [81, 5, 0.4, 14], corn: [86, 3.2, 1.2, 19],
+  celery: [16, 0.7, 0.2, 3], beans: [127, 7.8, 0.5, 23],
+  banana: [89, 1.1, 0.3, 23], apple: [52, 0.3, 0.2, 14], berries: [50, 1, 0.3, 12],
+  orange: [47, 0.9, 0.1, 12], lemon: [29, 1.1, 0.3, 9], pear: [57, 0.4, 0.1, 15],
+  rice: [344, 6.7, 0.7, 78], buckwheat: [343, 13, 3.4, 72], oatmeal: [389, 17, 7, 66],
+  millet: [378, 11, 4.2, 73], oat_flour: [369, 12, 6, 66], flour: [364, 10, 1, 76],
+  pasta: [350, 12, 1.5, 72], pearl_barley: [352, 9, 1, 77], bread: [265, 8, 3, 49],
+  soy_sauce: [53, 8, 0, 5], tofu: [76, 8, 4.8, 1.9], sesame: [573, 17, 49, 12],
+  honey: [304, 0.3, 0, 82], nuts: [654, 15, 65, 14], peanut: [567, 26, 49, 16],
+  oil: [899, 0, 100, 0], cocoa: [228, 20, 14, 58], spices: [0, 0, 0, 0]
+};
+const MACRO_PC = {
+  egg: [78, 6.3, 5.3, 0.6], avocado: [160, 2, 15, 9], lavash: [90, 3, 1, 18], sweetener: [0, 0, 0, 0]
+};
+
+function makeIngredient(ingId, qty) {
+  const ing = INGREDIENT_MAP[ingId];
+  return { ingId: ingId, qtyPerServing: qty, unit: ing ? ing.unit : 'kg' };
+}
+function macrosFor(items) {
+  const m = { kcal: 0, p: 0, f: 0, c: 0 };
+  items.forEach(function (it) {
+    const ing = INGREDIENT_MAP[it.ingId];
+    const table = ing && ing.unit === 'pc' ? MACRO_PC[it.ingId] : MACRO100[it.ingId];
+    if (!table) return;
+    const factor = ing && ing.unit === 'pc' ? it.qtyPerServing : it.qtyPerServing / 100;
+    m.kcal += table[0] * factor;
+    m.p += table[1] * factor;
+    m.f += table[2] * factor;
+    m.c += table[3] * factor;
+  });
+  return { kcal: Math.round(m.kcal), p: Math.round(m.p), f: Math.round(m.f), c: Math.round(m.c) };
+}
+function shuffleSeed(list, seed) {
+  let s = seed >>> 0;
+  for (let i = list.length - 1; i > 0; i--) {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    const j = s % (i + 1);
+    const tmp = list[i]; list[i] = list[j]; list[j] = tmp;
+  }
+  return list;
+}
+
+(function buildDishLibrary() {
+  const IMG = {
+    chicken: 'l_chicken_buckwheat', turkey: 'l_turkey_veg', beef: 'l_borsch', pork: 'l_pilaf',
+    liver: 'l_liver_potato', minced_chicken: 'd_chicken_mushroom', cod: 'd_cod_veg',
+    pollock: 'd_fish_potato', salmon: 'd_salmon_rice', shrimp: 'l_shrimp_rice', tofu: 'd_tofu_veg'
+  };
+  const add = function (dish) {
+    dish.image = 'assets/food/dishes/' + dish.imageId + '.jpg';
+    dish.gradient = dish.gradient || 'linear-gradient(135deg,#F6E5C8,#B97845)';
+    DISHES.push(dish);
+  };
+
+  /* ── Завтраки: каши ── */
+  const GRAINS = [
+    { ing: 'oatmeal', qty: 55, nom: 'Овсянка', img: 'b_oatmeal', emoji: '🥣' },
+    { ing: 'buckwheat', qty: 60, nom: 'Гречневая каша', img: 'b_buckwheat_milk', emoji: '🌾' },
+    { ing: 'millet', qty: 55, nom: 'Пшённая каша', img: 'b_pumpkin_porridge', emoji: '🌾' },
+    { ing: 'rice', qty: 55, nom: 'Рисовая каша', img: 'b_buckwheat_milk', emoji: '🍚' }
+  ];
+  const TOPPINGS = [
+    { text: 'с бананом и грецкими орехами', items: [['banana', 60], ['nuts', 10], ['honey', 5]], img: 'b_oatmeal' },
+    { text: 'с яблоком и мёдом', items: [['apple', 70], ['honey', 5], ['butter', 5]], img: 'b_oatmeal' },
+    { text: 'с ягодами и йогуртом', items: [['berries', 50], ['yogurt', 40]], img: 'b_buckwheat_milk' },
+    { text: 'с грушей и грецкими орехами', items: [['pear', 70], ['nuts', 10]], img: 'b_oatmeal' },
+    { text: 'с тыквой и мёдом', items: [['pumpkin', 100], ['honey', 5]], img: 'b_pumpkin_porridge' },
+    { text: 'с апельсином и мёдом', items: [['orange', 70], ['honey', 5]], img: 'b_buckwheat_milk' }
+  ];
+  GRAINS.forEach(function (g, gi) {
+    TOPPINGS.forEach(function (t, ti) {
+      const items = [makeIngredient(g.ing, g.qty), makeIngredient('milk', 150)].concat(t.items.map(function (x) { return makeIngredient(x[0], x[1]); }));
+      add({
+        id: 'v_b_porridge_' + gi + '_' + ti, slot: 'breakfast', name: g.nom + ' ' + t.text, emoji: g.emoji,
+        timeMin: 15, appliances: ['stove'], tier: 1, ingredients: items,
+        macros: macrosFor(items), imageId: t.img,
+        prep: 'Отмерь крупу и подготовь добавки. Молоко можно заменить водой.',
+        steps: [
+          'Промой крупу и залей молоком (или водой).',
+          'Доведи до кипения и вари 10–15 минут на слабом огне, помешивая.',
+          'Добавь масло и мёд, прогревай ещё минуту.',
+          'Выложи в миску и добавь ' + t.text.replace(/^с /, '') + '.'
+        ],
+        doneness: 'Крупа должна стать мягкой, а каша — густой. Если слишком густо, добавь немного молока.',
+        tip: 'Для кремовой текстуры дай каше постоять под крышкой 3–5 минут.',
+        serve: 'Подавай тёплой. Ягоды и орехи добавляй перед подачей, чтобы они не размокли.'
+      });
+    });
+  });
+
+  /* ── Завтраки: омлеты ── */
+  const OMELETS = [
+    { text: 'помидорами и сыром', items: [['tomato', 70], ['cheese', 25]], img: 'b_omelette' },
+    { text: 'шпинатом и грибами', items: [['spinach', 50], ['mushrooms', 60]], img: 'b_egg_spinach' },
+    { text: 'кабачком и зеленью', items: [['zucchini', 100], ['greens', 5]], img: 'b_zucchini' },
+    { text: 'брокколи и сыром', items: [['broccoli', 80], ['cheese', 25]], img: 'b_omelette' },
+    { text: 'тыквой и сыром', items: [['pumpkin', 100], ['cheese', 20]], img: 'b_pumpkin_porridge' },
+    { text: 'болгарским перцем и зеленью', items: [['pepper', 80], ['greens', 5]], img: 'b_omelette' },
+    { text: 'курицей и овощами', items: [['chicken_fillet', 60], ['tomato', 60]], img: 'b_omelette' },
+    { text: 'треской и шпинатом', items: [['cod', 70], ['spinach', 40]], img: 'b_egg_spinach' }
+  ];
+  OMELETS.forEach(function (o, i) {
+    const items = [makeIngredient('egg', 2), makeIngredient('milk', 30), makeIngredient('oil', 3)]
+      .concat(o.items.map(function (x) { return makeIngredient(x[0], x[1]); }));
+    add({
+      id: 'v_b_omelet_' + i, slot: 'breakfast', name: 'Омлет с ' + o.text, emoji: '🍳',
+      timeMin: 15, appliances: ['stove'], tier: 1, ingredients: items, macros: macrosFor(items), imageId: o.img,
+      steps: [
+        'Взбей яйца с молоком, солью и специями.',
+        'Разогрей сковороду с маслом и вылей яичную смесь.',
+        'Разложи начинку и готовь под крышкой 5–7 минут.',
+        'Сложи омлет пополам и подавай горячим.'
+      ],
+      doneness: 'Омлет готов, когда середина схватилась, но остаётся нежной.',
+      tip: 'Не делай огонь слишком сильным — омлет станет сухим.',
+      serve: 'Подавай сразу, с ломтиком хлеба или свежими овощами.'
+    });
+  });
+
+  /* ── Завтраки: тосты ── */
+  const TOASTS = [
+    { text: 'авокадо и яйцом', items: [['avocado', 0.3], ['egg', 1], ['greens', 5]], img: 'b_avocado_egg' },
+    { text: 'лососем и яйцом', items: [['salmon', 40], ['egg', 1], ['yogurt', 20]], img: 'b_salmon_toast' },
+    { text: 'творогом и помидором', items: [['cottage_cheese', 80], ['tomato', 60], ['greens', 5]], img: 'b_toast_cheese' },
+    { text: 'сыром и помидором', items: [['cheese', 30], ['tomato', 60], ['butter', 5]], img: 'b_toast_cheese' },
+    { text: 'индейкой и авокадо', items: [['turkey', 60], ['avocado', 0.25], ['tomato', 40]], img: 'b_avocado_egg' },
+    { text: 'яйцом и шпинатом', items: [['egg', 2], ['spinach', 40], ['cheese', 15]], img: 'b_egg_spinach' }
+  ];
+  TOASTS.forEach(function (t, i) {
+    const items = [makeIngredient('bread', 60)].concat(t.items.map(function (x) { return makeIngredient(x[0], x[1]); }));
+    add({
+      id: 'v_b_toast_' + i, slot: 'breakfast', name: 'Тост с ' + t.text, emoji: '🥪',
+      timeMin: 10, appliances: ['stove'], tier: 1, ingredients: items, macros: macrosFor(items), imageId: t.img,
+      steps: [
+        'Подсуши хлеб на сухой сковороде или в тостере.',
+        'Подготовь начинку: нарежь овощи, приготовь яйцо или рыбу.',
+        'Выложи начинку на хлеб и приправь.',
+        'Подавай сразу, пока хлеб хрустит.'
+      ],
+      doneness: 'Хлеб должен быть золотистым, но не гореть.',
+      tip: 'Авокадо разомни вилкой с щепоткой соли — так вкус ярче.',
+      serve: 'Подавай с листовым салатом или свежим огурцом.'
+    });
+  });
+
+  /* ── Завтраки: сырники и запеканки ── */
+  const CURD = [
+    { text: 'ягодами и йогуртом', items: [['berries', 50], ['yogurt', 40]], name: 'Сырники', img: 'b_syrniki' },
+    { text: 'яблоком', items: [['apple', 70]], name: 'Сырники', img: 'b_syrniki' },
+    { text: 'бананом и какао', items: [['banana', 60], ['cocoa', 3]], name: 'Творожная запеканка', img: 'd_cottage_casserole' },
+    { text: 'грушей', items: [['pear', 70]], name: 'Творожная запеканка', img: 'd_cottage_casserole' },
+    { text: 'апельсином', items: [['orange', 60]], name: 'Сырники', img: 'b_syrniki' },
+    { text: 'тыквой', items: [['pumpkin', 80]], name: 'Творожная запеканка', img: 'b_pumpkin_porridge' }
+  ];
+  CURD.forEach(function (c, i) {
+    const items = [makeIngredient('cottage_cheese', 150), makeIngredient('egg', 0.5), makeIngredient('oat_flour', 25), makeIngredient('sweetener', 1)]
+      .concat(c.items.map(function (x) { return makeIngredient(x[0], x[1]); }));
+    add({
+      id: 'v_b_curd_' + i, slot: 'breakfast', name: c.name + ' с ' + c.text, emoji: '🥞',
+      timeMin: c.name === 'Сырники' ? 20 : 30, appliances: c.name === 'Сырники' ? ['stove'] : ['oven'], tier: 2,
+      ingredients: items, macros: macrosFor(items), imageId: c.img,
+      steps: c.name === 'Сырники' ? [
+        'Смешай творог, яйцо, овсяную муку и сахарозаменитель.',
+        'Добавь подготовленную начинку и перемешай.',
+        'Сформируй сырники и обжарь на антипригарной сковороде по 3–4 минуты с каждой стороны.',
+        'Подавай тёплыми.'
+      ] : [
+        'Разогрей духовку до 180 °C.',
+        'Смешай творог, яйцо, муку и сахарозаменитель.',
+        'Добавь начинку, переложи в форму и разровняй.',
+        'Запекай 25–30 минут до золотистой корочки.'
+      ],
+      doneness: c.name === 'Сырники' ? 'Сырники готовы, когда корочка золотистая, а середина остаётся мягкой.' : 'Запеканка готова, когда центр схватился и не дрожит.',
+      tip: 'Если творог влажный, отожми его или добавь ложку муки.',
+      serve: 'Подавай тёплыми, с йогуртом или свежими фруктами.'
+    });
+  });
+
+  /* ── Завтраки: панкейки ── */
+  const PANCAKES = [
+    { text: 'яблоком', items: [['apple', 70]], img: 'b_pancakes' },
+    { text: 'бананом', items: [['banana', 60]], img: 'b_pancakes' },
+    { text: 'ягодами', items: [['berries', 50]], img: 'b_pancakes' },
+    { text: 'творогом', items: [['cottage_cheese', 60]], img: 'b_syrniki' },
+    { text: 'тыквой', items: [['pumpkin', 80]], img: 'b_pumpkin_porridge' }
+  ];
+  PANCAKES.forEach(function (p, i) {
+    const items = [makeIngredient('oat_flour', 50), makeIngredient('egg', 1), makeIngredient('milk', 80), makeIngredient('sweetener', 1), makeIngredient('oil', 3)]
+      .concat(p.items.map(function (x) { return makeIngredient(x[0], x[1]); }));
+    add({
+      id: 'v_b_pancake_' + i, slot: 'breakfast', name: 'Овсяные панкейки с ' + p.text, emoji: '🥞',
+      timeMin: 20, appliances: ['stove'], tier: 1, ingredients: items, macros: macrosFor(items), imageId: p.img,
+      steps: [
+        'Смешай овсяную муку, яйцо, молоко и сахарозаменитель.',
+        'Добавь начинку и перемешай до однородности.',
+        'Разогрей сковороду с маслом и жарь панкейки по 2 минуты с каждой стороны.',
+        'Подавай стопкой, полив йогуртом или мёдом.'
+      ],
+      doneness: 'Панкейки готовы, когда на поверхности появляются пузырьки, а края подсохли.',
+      tip: 'Дай тесту постоять 5 минут — панкейки получатся пышнее.',
+      serve: 'Подавай тёплыми с ягодами или ломтиками фруктов.'
+    });
+  });
+
+  /* ── Завтраки: смузи ── */
+  const SMOOTHIES = [
+    { text: 'ягодами и овсянкой', items: [['berries', 80], ['oatmeal', 25]], img: 'b_cottage_banana' },
+    { text: 'яблоком и орехами', items: [['apple', 70], ['nuts', 10]], img: 'b_cottage_banana' },
+    { text: 'грушей и мёдом', items: [['pear', 80], ['honey', 5]], img: 'b_cottage_banana' },
+    { text: 'апельсином и йогуртом', items: [['orange', 80], ['yogurt', 60]], img: 'b_cottage_banana' },
+    { text: 'бананом и какао', items: [['banana', 70], ['cocoa', 3]], img: 'b_cottage_banana' },
+    { text: 'тыквой и бананом', items: [['pumpkin', 80], ['banana', 50]], img: 'b_cottage_banana' }
+  ];
+  SMOOTHIES.forEach(function (s, i) {
+    const items = [makeIngredient('kefir', 200), makeIngredient('oatmeal', 20)]
+      .concat(s.items.map(function (x) { return makeIngredient(x[0], x[1]); }));
+    add({
+      id: 'v_b_smoothie_' + i, slot: 'breakfast', name: 'Смузи с ' + s.text, emoji: '🥤',
+      timeMin: 7, appliances: ['blender'], tier: 1, ingredients: items, macros: macrosFor(items), imageId: s.img,
+      steps: [
+        'Подготовь фрукты: вымой, при необходимости очисти.',
+        'Сложи все ингредиенты в чашу блендера.',
+        'Взбивай 30–60 секунд до однородности.',
+        'Перелей в стакан и подавай сразу.'
+      ],
+      doneness: 'Смузи должен быть однородным, без крупных кусочков.',
+      tip: 'Если смузи слишком густой, добавь немного воды или кефира.',
+      serve: 'Подавай сразу после приготовления — так больше витаминов.'
+    });
+  });
+
+  /* ── Обеды и ужины: белок + гарнир + овощи ── */
+  const PROTEINS = [
+    { id: 'chicken_fillet', qty: 150, nom: 'Куриное филе', instr: 'курицей', tier: 1, emoji: '🍗', img: IMG.chicken },
+    { id: 'turkey', qty: 150, nom: 'Индейка', instr: 'индейкой', tier: 1, emoji: '🦃', img: IMG.turkey },
+    { id: 'beef', qty: 140, nom: 'Говядина', instr: 'говядиной', tier: 2, emoji: '🥩', img: IMG.beef },
+    { id: 'pork', qty: 140, nom: 'Свинина', instr: 'свининой', tier: 2, emoji: '🥩', img: IMG.pork },
+    { id: 'liver', qty: 150, nom: 'Печень', instr: 'печенью', tier: 1, emoji: '🫀', img: IMG.liver },
+    { id: 'cod', qty: 170, nom: 'Треска', instr: 'треской', tier: 2, emoji: '🐟', img: IMG.cod },
+    { id: 'pollock', qty: 170, nom: 'Минтай', instr: 'минтаем', tier: 1, emoji: '🐟', img: IMG.pollock },
+    { id: 'salmon', qty: 140, nom: 'Лосось', instr: 'лососем', tier: 3, emoji: '🐟', img: IMG.salmon },
+    { id: 'shrimp', qty: 120, nom: 'Креветки', instr: 'креветками', tier: 3, emoji: '🦐', img: IMG.shrimp },
+    { id: 'tofu', qty: 160, nom: 'Тофу', instr: 'тофу', tier: 2, emoji: '🧊', img: IMG.tofu }
+  ];
+  const SIDES = [
+    { id: 'buckwheat', qty: 60, instr: 'гречкой', nom: 'гречка', tier: 1 },
+    { id: 'rice', qty: 60, instr: 'рисом', nom: 'рис', tier: 1 },
+    { id: 'potato', qty: 200, instr: 'картофелем', nom: 'картофель', tier: 1 },
+    { id: 'pasta', qty: 60, instr: 'пастой', nom: 'паста', tier: 1 },
+    { id: 'pearl_barley', qty: 60, instr: 'перловкой', nom: 'перловка', tier: 1 },
+    { id: 'beans', qty: 150, instr: 'фасолью', nom: 'фасоль', tier: 1 }
+  ];
+  const VEGS = [
+    { id: 'broccoli', qty: 120, instr: 'брокколи', nom: 'брокколи' },
+    { id: 'zucchini', qty: 150, instr: 'кабачком', nom: 'кабачок' },
+    { id: 'pepper', qty: 120, instr: 'болгарским перцем', nom: 'болгарский перец' },
+    { id: 'tomato', qty: 120, instr: 'помидорами', nom: 'помидоры' },
+    { id: 'pumpkin', qty: 150, instr: 'тыквой', nom: 'тыква' },
+    { id: 'spinach', qty: 80, instr: 'шпинатом', nom: 'шпинат' },
+    { id: 'green_peas', qty: 80, instr: 'зелёным горошком', nom: 'зелёный горошек' },
+    { id: 'beet', qty: 120, instr: 'свёклой', nom: 'свёкла' }
+  ];
+  const PLATE_STYLES = [
+    { key: 'pan', appliances: ['stove'], time: 25, text: 'обжарь' },
+    { key: 'oven', appliances: ['oven'], time: 35, text: 'запеки' },
+    { key: 'multi', appliances: ['multicooker'], time: 30, text: 'приготовь' }
+  ];
+
+  const combos = [];
+  PROTEINS.forEach(function (p) {
+    SIDES.forEach(function (s) {
+      VEGS.forEach(function (v) { combos.push({ p: p, s: s, v: v }); });
+    });
+  });
+  shuffleSeed(combos, 20261025);
+
+  function plateDish(combo, index, slot) {
+    const p = combo.p, s = combo.s, v = combo.v;
+    const style = PLATE_STYLES[index % PLATE_STYLES.length];
+    const items = [makeIngredient(p.id, p.qty), makeIngredient(s.id, s.qty), makeIngredient(v.id, v.qty), makeIngredient('oil', 5), makeIngredient('spices', 1), makeIngredient('garlic', 3)];
+    const time = style.time + (p.id === 'potato' ? 10 : 0);
+    const steps = style.key === 'oven' ? [
+      'Разогрей духовку до 190 °C.',
+      'Нарежь ' + v.nom + ' и подготовь ' + s.nom + ' согласно инструкции.',
+      'Выложи ' + p.instr + ', ' + s.instr + ' и овощи на противень, добавь масло и специи.',
+      'Запекай 25–35 минут, перевернув один раз.',
+      'Дай настояться 5 минут и подавай.'
+    ] : (style.key === 'multi' ? [
+      'Подготовь ' + p.instr + ', ' + s.nom + ' и ' + v.nom + '.',
+      'Сложи продукты в чашу мультиварки, добавь масло, специи и немного воды.',
+      'Включи режим «Тушение» или «Плов» на 30 минут.',
+      'После сигнала дай настояться 5–10 минут.',
+      'Разложи по тарелкам и посыпь зеленью.'
+    ] : [
+      'Подготовь ' + p.instr + ': нарежь и обсуши.',
+      'Отвари ' + s.nom + ' до готовности.',
+      'Разогрей сковороду с маслом, обжарь ' + p.instr + ' до золотистой корочки.',
+      'Добавь ' + v.nom + ' и специи, готовь ещё 7–10 минут.',
+      'Подавай с гарниром и свежей зеленью.'
+    ]);
+    add({
+      id: 'v_' + slot.charAt(0) + '_plate_' + index, slot: slot,
+      name: p.nom + ' с ' + s.instr + ' и ' + v.instr,
+      emoji: p.emoji, timeMin: time, appliances: style.appliances, tier: p.tier,
+      ingredients: items, macros: macrosFor(items), imageId: p.img,
+      prep: 'Вымой овощи и зелень. Мясо или рыбу обсуши бумажным полотенцем — так корочка будет лучше.',
+      steps: steps,
+      doneness: p.id === 'cod' || p.id === 'pollock' || p.id === 'salmon'
+        ? 'Рыба готова, когда легко расслаивается вилкой и стала непрозрачной в центре.'
+        : 'Мясо готово, когда сок прозрачный, а внутри нет розового цвета.',
+      tip: 'Не перегружай сковороду: продукты должны лежать в один слой, иначе они будут тушиться, а не жариться.',
+      serve: 'Подавай горячим, с свежей зеленью и ломтиком лимона по желанию.'
+    });
+  }
+
+  for (let i = 0; i < 120; i++) plateDish(combos[i], i + 1, 'lunch');
+  for (let i = 120; i < 240; i++) plateDish(combos[i], i + 1, 'dinner');
+
+  /* ── Супы ── */
+  const SOUP_PROTEINS = PROTEINS.filter(function (p) { return ['chicken_fillet', 'turkey', 'beef', 'cod', 'pollock', 'salmon'].indexOf(p.id) !== -1; });
+  const SOUP_VEGS = [VEGS[0], VEGS[1], VEGS[2], VEGS[4]];
+  let soupIndex = 0;
+  SOUP_PROTEINS.forEach(function (p) {
+    SOUP_VEGS.forEach(function (v) {
+      soupIndex++;
+      const items = [makeIngredient(p.id, 120), makeIngredient('potato', 150), makeIngredient('carrot', 40), makeIngredient('onion', 30), makeIngredient(v.id, 100), makeIngredient('oil', 5), makeIngredient('spices', 1), makeIngredient('greens', 5)];
+      add({
+        id: 'v_l_soup_' + soupIndex, slot: 'lunch', name: 'Суп с ' + p.instr + ', картофелем и ' + v.instr, emoji: '🍲',
+        timeMin: 40, appliances: ['stove'], tier: p.tier, ingredients: items, macros: macrosFor(items), imageId: p.id === 'beef' ? 'l_borsch' : 'l_soup_chicken',
+        prep: 'Нарежь мясо или рыбу кусочками, овощи — кубиками. Подготовь кастрюлю.',
+        steps: [
+          'Доведи 1,2 л воды до кипения, добавь ' + p.instr + ' и вари 15 минут.',
+          'Добавь картофель, морковь и лук, вари ещё 10 минут.',
+          'Положи ' + v.nom + ', масло и специи, готовь 5–7 минут.',
+          'Попробуй и отрегулируй соль, добавь зелень.',
+          'Дай супу настояться 5 минут под крышкой.'
+        ],
+        doneness: 'Овощи должны стать мягкими, а бульон — ароматным.',
+        tip: 'Не кипяти суп слишком vigorously — так он останется прозрачным.',
+        serve: 'Подавай горячим, со свежей зеленью и ломтиком хлеба.'
+      });
+    });
+  });
+
+  /* ── Запеканки ── */
+  const BAKE_PROTEINS = PROTEINS.filter(function (p) { return ['chicken_fillet', 'turkey', 'beef', 'cod', 'pollock', 'tofu'].indexOf(p.id) !== -1; });
+  const BAKE_VEGS = [VEGS[1], VEGS[2], VEGS[4], VEGS[6]];
+  let bakeIndex = 0;
+  BAKE_PROTEINS.forEach(function (p) {
+    BAKE_VEGS.forEach(function (v) {
+      bakeIndex++;
+      const items = [makeIngredient(p.id, 150), makeIngredient(v.id, 150), makeIngredient('cheese', 30), makeIngredient('sour_cream', 30), makeIngredient('oil', 5), makeIngredient('spices', 1)];
+      add({
+        id: 'v_d_bake_' + bakeIndex, slot: 'dinner', name: 'Запеканка с ' + p.instr + ' и ' + v.instr, emoji: '🥘',
+        timeMin: 40, appliances: ['oven'], tier: p.tier, ingredients: items, macros: macrosFor(items), imageId: p.id === 'tofu' ? 'd_tofu_veg' : 'd_zucchini_boats',
+        prep: 'Разогрей духовку до 190 °C. Нарежь овощи тонкими ломтиками.',
+        steps: [
+          'Смешай ' + p.instr + ' со специями и половиной сметаны.',
+          'Выложи половину овощей в форму, затем слой белка.',
+          'Накрой оставшимися овощами и смажь сметаной.',
+          'Посыпь сыром и запекай 30–35 минут.',
+          'Дай постоять 5 минут перед подачей.'
+        ],
+        doneness: 'Сыр должен расплавиться и подрумяниться, а овощи — стать мягкими.',
+        tip: 'Если овощи дают много сока, слейте его перед запеканием.',
+        serve: 'Подавай прямо из формы, с свежим салатом.'
+      });
+    });
+  });
+
+  /* ── Салаты ── */
+  const SALAD_PROTEINS = PROTEINS.filter(function (p) { return ['chicken_fillet', 'turkey', 'beef', 'shrimp', 'tofu'].indexOf(p.id) !== -1; });
+  const SALAD_VEGS = [VEGS[2], VEGS[3], VEGS[6], VEGS[7]];
+  let saladIndex = 0;
+  SALAD_PROTEINS.forEach(function (p) {
+    SALAD_VEGS.forEach(function (v) {
+      saladIndex++;
+      const items = [makeIngredient(p.id, 110), makeIngredient(v.id, 100), makeIngredient('cucumber', 60), makeIngredient('greens', 10), makeIngredient('oil', 6), makeIngredient('lemon', 10), makeIngredient('spices', 1)];
+      add({
+        id: 'v_l_salad_' + saladIndex, slot: 'lunch', name: 'Салат с ' + p.instr + ' и ' + v.instr, emoji: '🥗',
+        timeMin: 20, appliances: p.id === 'tofu' ? ['stove'] : ['stove'], tier: p.tier,
+        ingredients: items, macros: macrosFor(items), imageId: 'd_chicken_wrap',
+        prep: 'Вымой овощи и зелень. Белок приготовь заранее и остуди.',
+        steps: [
+          'Приготовь ' + p.instr + ' на сковороде до готовности и нарежь.',
+          'Нарежь ' + v.nom + ' и огурец удобными кусочками.',
+          'Смешай всё в миске, добавь зелень.',
+          'Заправь маслом и лимонным соком, приправь.',
+          'Перемешай и подавай сразу.'
+        ],
+        doneness: 'Белок должен быть полностью готов, овощи — свежими и хрустящими.',
+        tip: 'Заправляй салат прямо перед подачей, чтобы овощи не дали сок.',
+        serve: 'Подавай как самостоятельное блюдо или гарнир к супу.'
+      });
+    });
+  });
+
+  /* ── Котлеты ── */
+  const CUTLET_SIDES = [SIDES[0], SIDES[1], SIDES[2], SIDES[3]];
+  const CUTLET_VEGS = [VEGS[0], VEGS[1], VEGS[4]];
+  let cutletIndex = 0;
+  CUTLET_SIDES.forEach(function (s) {
+    CUTLET_VEGS.forEach(function (v) {
+      cutletIndex++;
+      const items = [makeIngredient('minced_chicken', 140), makeIngredient('egg', 0.3), makeIngredient('bread', 20), makeIngredient('onion', 30), makeIngredient(s.id, s.qty), makeIngredient(v.id, v.qty), makeIngredient('oil', 5), makeIngredient('spices', 1)];
+      add({
+        id: 'v_d_cutlet_' + cutletIndex, slot: 'dinner', name: 'Куриные котлеты с ' + s.instr + ' и ' + v.instr, emoji: '🍗',
+        timeMin: 30, appliances: ['stove'], tier: 1, ingredients: items, macros: macrosFor(items), imageId: 'd_chicken_mushroom',
+        prep: 'Подготовь фарш, лук и хлеб. Лук натри на мелкой тёрке.',
+        steps: [
+          'Смешай фарш, яйцо, размоченный хлеб, лук и специи.',
+          'Сформируй котлеты мокрыми руками.',
+          'Обжарь на разогретой сковороде по 4–5 минут с каждой стороны.',
+          'Отвари гарнир и подготовь ' + v.nom + '.',
+          'Подавай котлеты с гарниром и овощами.'
+        ],
+        doneness: 'Котлеты готовы, когда внутри нет розового фарша, а корочка золотистая.',
+        tip: 'Дай фаршу постоять 10 минут — котлеты будут сочнее.',
+        serve: 'Подавай горячими, с любимым соусом и свежей зеленью.'
+      });
+    });
+  });
+})();
+
 DISHES.forEach(function (dish) {
-  dish.image = 'assets/food/dishes/' + dish.id + '.jpg';
+  if (!dish.image) dish.image = 'assets/food/dishes/' + dish.id + '.jpg';
   const set = [];
   dish.ingredients.forEach(function (it) {
     const ing = INGREDIENT_MAP[it.ingId];

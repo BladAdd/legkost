@@ -129,6 +129,9 @@ function buildContext() {
 /* Перерисовывает страницу приложения. app.js сам обновляет #ai-root через AI.render(). */
 function paint() {
   try {
+    document.body.classList.toggle('ai-open', !!AI.open);
+  } catch (e) { /* body может быть ещё не готов */ }
+  try {
     if (typeof window.render === 'function') {
       window.render();
       return;
@@ -451,6 +454,50 @@ function startCooldownTicker() {
   }, 1000);
 }
 
+/* ───────── КОМАНДЫ ПЛАНА ─────────
+   Понимаем просьбы изменить рацион локально и выполняем их кодом.
+   Малой модели не нужно надёжно выдавать JSON — команда сработает всегда. */
+function detectPlanCommand(text) {
+  const raw = String(text || '').toLowerCase().replace(/ё/g, 'е');
+  const q = raw.replace(/[!?.,;:()"«»]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!q) return null;
+
+  const budgetMatch = q.match(/(?:бюджет[^0-9]{0,40}|уложись\s+в\s+|уложиться\s+в\s+|поставь\s+бюджет\s+)(\d[\d\s]{2,})/);
+  if (budgetMatch) {
+    const amount = parseInt(budgetMatch[1].replace(/\s+/g, ''), 10);
+    if (amount >= 500) return { type: 'budget', amount: amount };
+  }
+  if (/превыш|перерасход|не\s+улож|уложись\s+в\s+бюджет|подгони\s+бюджет|в\s+рамках\s+бюджета/.test(q)) {
+    return { type: 'fix' };
+  }
+  const excludeMatch = q.match(/(?:убери|исключи|удали)\s+([а-яa-z\- ]{3,40})/);
+  if (excludeMatch) {
+    const product = excludeMatch[1].replace(/\s+(из|в|со|с)\s+.*$/, '').trim();
+    if (product) return { type: 'exclude', product: product };
+  }
+  const replaceMatch = q.match(/(?:замени|поменяй|другой|другое)\s+(ужин|обед|завтрак)/) ||
+    q.match(/(ужин|обед|завтрак)\s+(?:на|другой|другое|поменяй)/);
+  if (replaceMatch) {
+    const slot = replaceMatch[1] === 'завтрак' ? 'breakfast' : (replaceMatch[1] === 'обед' ? 'lunch' : 'dinner');
+    const cmd = { type: 'replace', slot: slot };
+    if (/рыб/.test(q)) cmd.goal = 'fish';
+    else if (/дешев|эконом/.test(q)) cmd.goal = 'cheap';
+    if (/быстр|до\s*30|30\s*мин/.test(q)) cmd.maxTime = 30;
+    return cmd;
+  }
+  if (/больше\s+рыб|добавь\s+рыб|хочу\s+рыб|рыбы\s+побольше|рыбн/.test(q)) return { type: 'fish' };
+  if (/больше\s+овощ|добавь\s+овощ|хочу\s+овощ|овощей\s+побольше|растительн|без\s+мяса|вегетариан/.test(q)) return { type: 'veg' };
+  if (/сделай\s+(?:рацион|меню|еду\s+)?легче|меньше\s+калор|снизь\s+калор|похуде|полегче/.test(q)) return { type: 'light' };
+  if (/разнообраз|надоел|не\s+повтор|другие\s+блюда|новое\s+меню/.test(q)) return { type: 'variety' };
+  if (/больше\s+белк|белк\w*\s+побольше|добавь\s+белк|увеличь\s+белк|хочу\s+белк|высокобелк|протеин|больш\w*\s+количеств\w*\s+белк/.test(q)) {
+    return { type: 'protein' };
+  }
+  if (/дешевле|сделай\s+дешев|снизь\s+стоим|сократи\s+расход|сэконом|экономн|поменьше\s+денег/.test(q)) {
+    return { type: 'cheap' };
+  }
+  return null;
+}
+
 async function sendMessage(text) {
   if (AI.loading) return;
   const value = String(text || '').trim();
@@ -458,6 +505,29 @@ async function sendMessage(text) {
 
   AI.loading = true;
   addMessage('user', value);
+
+  /* Команды рациона понимаем и выполняем сразу, без ожидания модели. */
+  const command = detectPlanCommand(value);
+  if (command) {
+    const bridge = window.__legkostAI;
+    AI.lastError = '';
+    try {
+      if (!bridge || !bridge.applyCommand) {
+        addMessage('assistant', 'Не удалось получить доступ к плану. Обнови страницу.');
+      } else if (bridge.isAvailable && !bridge.isAvailable()) {
+        addMessage('assistant', 'Сначала сгенерируй рацион на неделю — тогда я смогу его менять.');
+      } else {
+        const result = bridge.applyCommand(command);
+        addMessage('assistant', result && result.text ? result.text : 'Готово — рацион обновлён.');
+      }
+    } catch (e) {
+      addMessage('assistant', 'Не получилось изменить рацион: ' + (e && e.message ? e.message : e));
+    } finally {
+      AI.loading = false;
+      paint();
+    }
+    return;
+  }
 
   const context = buildContext();
   const messages = [];
@@ -693,5 +763,6 @@ AI.setMode = setMode;
 AI.setGateway = setGateway;
 AI.setServerUrl = setServerUrl;
 AI.refreshServer = refreshServer;
+AI.detectPlanCommand = detectPlanCommand;
 
 })();

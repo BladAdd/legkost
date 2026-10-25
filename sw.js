@@ -2,7 +2,7 @@
    Работает и в корне, и в подпапке (GitHub Pages /legkost/), потому что все пути относительные.
    Стратегия: оболочка — network-first с офлайн-фолбэком, картинки — cache-first.
 */
-const CACHE = 'legkost-v4';
+const CACHE = 'legkost-v5';
 
 const ASSETS = [
   './',
@@ -27,7 +27,44 @@ const ASSETS = [
   './assets/avatars/avatar-3.jpg',
   './assets/avatars/avatar-4.jpg',
   './assets/avatars/avatar-5.jpg',
-  './assets/avatars/avatar-6.jpg'
+  './assets/avatars/avatar-6.jpg',
+  /* Фото блюд: их всего 36, зато офлайн-рацион никогда не останется без картинок. */
+  './assets/food/dishes/b_avocado_egg.jpg',
+  './assets/food/dishes/b_buckwheat_milk.jpg',
+  './assets/food/dishes/b_cottage_banana.jpg',
+  './assets/food/dishes/b_egg_spinach.jpg',
+  './assets/food/dishes/b_oatmeal.jpg',
+  './assets/food/dishes/b_omelette.jpg',
+  './assets/food/dishes/b_pancakes.jpg',
+  './assets/food/dishes/b_pumpkin_porridge.jpg',
+  './assets/food/dishes/b_salmon_toast.jpg',
+  './assets/food/dishes/b_syrniki.jpg',
+  './assets/food/dishes/b_toast_cheese.jpg',
+  './assets/food/dishes/b_zucchini.jpg',
+  './assets/food/dishes/d_chicken_mushroom.jpg',
+  './assets/food/dishes/d_chicken_wrap.jpg',
+  './assets/food/dishes/d_cod_veg.jpg',
+  './assets/food/dishes/d_cottage_casserole.jpg',
+  './assets/food/dishes/d_fish_potato.jpg',
+  './assets/food/dishes/d_pumpkin_chicken.jpg',
+  './assets/food/dishes/d_salmon_rice.jpg',
+  './assets/food/dishes/d_shrimp_pasta.jpg',
+  './assets/food/dishes/d_tofu_veg.jpg',
+  './assets/food/dishes/d_turkey_airfryer.jpg',
+  './assets/food/dishes/d_veg_stew.jpg',
+  './assets/food/dishes/d_zucchini_boats.jpg',
+  './assets/food/dishes/l_borsch.jpg',
+  './assets/food/dishes/l_buckwheat_mushroom.jpg',
+  './assets/food/dishes/l_cabbage_rolls.jpg',
+  './assets/food/dishes/l_chicken_buckwheat.jpg',
+  './assets/food/dishes/l_fishcakes.jpg',
+  './assets/food/dishes/l_liver_potato.jpg',
+  './assets/food/dishes/l_pasta_chicken.jpg',
+  './assets/food/dishes/l_peppers.jpg',
+  './assets/food/dishes/l_pilaf.jpg',
+  './assets/food/dishes/l_shrimp_rice.jpg',
+  './assets/food/dishes/l_soup_chicken.jpg',
+  './assets/food/dishes/l_turkey_veg.jpg'
 ];
 
 self.addEventListener('install', function (e) {

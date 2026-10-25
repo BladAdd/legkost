@@ -6,6 +6,7 @@ const CONFIG = {
   kidK: 0.8,
   minBudget: 1000,
   maxBudget: 25000,
+  budgetCeiling: 100000,
   budgetStep: 500,
   levels: [
     { max: 1500, tier: 1, title: 'Строго эконом', desc: 'Курица, яйца, сезонные овощи и крупы — без лишнего.', emoji: '🥕' },
@@ -237,7 +238,7 @@ function normalizeState(raw) {
       return day;
     });
   }
-  d.budget = clamp(Math.round((parseInt(raw.budget, 10) || CONFIG.defaultBudget) / CONFIG.budgetStep) * CONFIG.budgetStep, CONFIG.minBudget, CONFIG.maxBudget);
+  d.budget = clamp(Math.round((parseInt(raw.budget, 10) || CONFIG.defaultBudget) / CONFIG.budgetStep) * CONFIG.budgetStep, CONFIG.minBudget, CONFIG.budgetCeiling);
   if (Array.isArray(raw.allergies)) {
     const ids = CONFIG.allergies.map(function (a) { return a.id; });
     const list = raw.allergies.filter(function (a) { return ids.indexOf(a) !== -1; });
@@ -517,11 +518,12 @@ async function syncPriceSnapshot(manual) {
     snap.checkedAt = Date.now();
     snap.source = updated ? 'Обновлённый снимок data/prices-orsk.json' : snap.source;
   }
+  const guard = ensureCurrentPlanBudget();
   animateNext = false;
   if (state.ui.screen === 'region' || state.ui.screen === 'week') render();
   if (manual) {
     toast(updated
-      ? 'Цены обновлены из data/prices-orsk.json'
+      ? 'Цены обновлены из data/prices-orsk.json' + (guard && guard.raised ? ' · бюджет поднят до ' + fmtMoney(guard.raised.to) : '')
       : 'Используем встроенный снимок цен Орска от ' + (snap ? snap.dateLabel : '22.10.2026'));
   }
 }
@@ -822,8 +824,9 @@ function selectRegion(regionId) {
     currentProfile.regionId = regionId;
     persistProfile();
   }
+  const guard = ensureCurrentPlanBudget();
   saveState();
-  toast('Регион: ' + region.name + '. Цены пересчитаны');
+  toast('Регион: ' + region.name + '. Цены пересчитаны' + (guard && guard.raised ? ' · бюджет поднят до ' + fmtMoney(guard.raised.to) : ''));
   if (back === 'profile') openProfile();
   else if (back === 'week' && state.plan) setScreen('week');
   else if (back === 'map') { state.ui.screen = 'map'; render(); window.scrollTo({ top: 0, behavior: 'auto' }); }
@@ -881,10 +884,11 @@ async function restorePlan(id) {
     persistProfile();
   }
   modalOpen = false;
+  const guard = ensureCurrentPlanBudget();
   saveState();
   render();
   window.scrollTo({ top: 0, behavior: 'auto' });
-  toast('Рацион от ' + formatProfileDate(plan.createdAt) + ' восстановлен');
+  toast('Рацион от ' + formatProfileDate(plan.createdAt) + ' восстановлен' + (guard && guard.raised ? ' · бюджет поднят до ' + fmtMoney(guard.raised.to) : ''));
 }
 async function deletePlan(id) {
   if (!window.confirm('Удалить этот рацион из истории?')) return;
@@ -1100,7 +1104,394 @@ function macroDeviation(macros, target) {
     Math.abs(m.f - target.f) / Math.max(1, target.f) * 0.85 +
     Math.abs(m.c - target.c) / Math.max(1, target.c) * 0.80;
 }
-function generatePlan() {
+
+/* ───────── ЖЁСТКИЙ БЮДЖЕТ ─────────
+   Считаем не «граммы по плану», а реальные деньги: целые упаковки.
+   План не считается готовым, пока закупка не влезла в бюджет. */
+const FISH_IDS = ['salmon', 'cod', 'pollock', 'shrimp'];
+const MEAT_IDS = ['chicken_fillet', 'turkey', 'beef', 'pork', 'liver', 'minced_chicken'];
+/* Рыба полезна, но 20 рыбных приёмов из 21 — это перебор и дорого.
+   Держим около одного рыбного блюда в день. */
+const FISH_WEEK_CAP = 8;
+function dishHasIngredient(dish, ids) {
+  return dish.ingredients.some(function (it) { return ids.indexOf(it.ingId) !== -1; });
+}
+function dishGoalScore(dish, goal, target) {
+  const m = dish.macros || { kcal: 0, p: 0, f: 0, c: 0 };
+  const kcal = Math.max(1, m.kcal || 0);
+  let score = 0;
+  if (goal === 'protein') {
+    score -= Math.min(6, (m.p || 0) / 6);
+    score -= Math.min(3, ((m.p || 0) / kcal) * 100 * 0.35);
+  } else if (goal === 'fish') {
+    if (dishHasIngredient(dish, FISH_IDS)) score -= 5;
+  } else if (goal === 'veg') {
+    score -= Math.min(5, dishVegGrams(dish) / 40);
+    if (!dishHasIngredient(dish, FISH_IDS.concat(MEAT_IDS))) score -= 1.5;
+  } else if (goal === 'light') {
+    const t = target || { kcal: 600 };
+    score += Math.max(0, ((m.kcal || 0) - t.kcal) / 220);
+    score -= Math.max(0, (t.kcal - (m.kcal || 0)) / 500);
+  }
+  return score;
+}
+function dishVegGrams(dish) {
+  return dish.ingredients.reduce(function (sum, it) {
+    const ing = ING[it.ingId];
+    if (!ing || ing.category !== 'veg') return sum;
+    return sum + it.qtyPerServing;
+  }, 0);
+}
+function dishContribution(dish, k) {
+  const out = {};
+  dish.ingredients.forEach(function (it) {
+    const ing = ING[it.ingId];
+    if (!ing) return;
+    const qty = ing.unit === 'pc' ? Math.ceil(it.qtyPerServing * k - 1e-9) : it.qtyPerServing * k;
+    out[ing.id] = (out[ing.id] || 0) + qty;
+  });
+  return out;
+}
+function addTotals(totals, map, sign) {
+  Object.keys(map).forEach(function (id) {
+    const next = (totals[id] || 0) + sign * map[id];
+    if (next <= 1e-9) delete totals[id];
+    else totals[id] = next;
+  });
+}
+function planIngredientTotals(plan) {
+  const totals = {};
+  plan.days.forEach(function (day, dayIndex) {
+    daySlots(dayIndex).forEach(function (slot) {
+      const m = mealInfo(day, slot);
+      if (!m) return;
+      addTotals(totals, dishContribution(m.dish, m.k), 1);
+    });
+  });
+  return totals;
+}
+function isPantryItem(id) {
+  return (state.pantry || []).indexOf(id) !== -1;
+}
+function packCostForQty(id, qty) {
+  if (!(qty > 1e-9)) return 0;
+  if (isPantryItem(id)) return 0;
+  const ing = ING[id];
+  if (!ing) return 0;
+  const packInfo = packsFor(id, qty);
+  if (packInfo) return packInfo.packCost;
+  if (ing.unit === 'pc') return Math.round(ingredientPrice(ing) * Math.ceil(qty - 1e-9));
+  return Math.round(ingredientPrice(ing) * qty / 1000);
+}
+function totalsPackCost(totals) {
+  let total = 0;
+  Object.keys(totals).forEach(function (id) {
+    total += packCostForQty(id, totals[id]);
+  });
+  return Math.round(total);
+}
+function budgetCostState(plan) {
+  const totals = planIngredientTotals(plan);
+  const costs = {};
+  let total = 0;
+  Object.keys(totals).forEach(function (id) {
+    const cost = packCostForQty(id, totals[id]);
+    costs[id] = cost;
+    total += cost;
+  });
+  return { totals: totals, costs: costs, total: Math.round(total) };
+}
+function costStateTrial(cs, removeMap, addMap) {
+  const ids = {};
+  Object.keys(removeMap).forEach(function (id) { ids[id] = true; });
+  Object.keys(addMap).forEach(function (id) { ids[id] = true; });
+  let total = cs.total;
+  Object.keys(ids).forEach(function (id) {
+    const before = cs.totals[id] || 0;
+    const after = Math.max(0, before - (removeMap[id] || 0) + (addMap[id] || 0));
+    total += packCostForQty(id, after) - (cs.costs[id] || 0);
+  });
+  return Math.round(total);
+}
+function costStateApply(cs, removeMap, addMap) {
+  addTotals(cs.totals, removeMap, -1);
+  addTotals(cs.totals, addMap, 1);
+  const changed = {};
+  Object.keys(removeMap).forEach(function (id) { changed[id] = true; });
+  Object.keys(addMap).forEach(function (id) { changed[id] = true; });
+  let total = cs.total;
+  Object.keys(changed).forEach(function (id) {
+    const next = packCostForQty(id, cs.totals[id] || 0);
+    total += next - (cs.costs[id] || 0);
+    if (next > 0) cs.costs[id] = next;
+    else delete cs.costs[id];
+  });
+  cs.total = Math.round(total);
+  return cs.total;
+}
+function planSummaryFrom(plan) {
+  let cost = 0, portions = 0;
+  const macros = { kcal: 0, p: 0, f: 0, c: 0 };
+  plan.days.forEach(function (day, dayIndex) {
+    daySlots(dayIndex).forEach(function (slot) {
+      const m = mealInfo(day, slot);
+      if (!m) return;
+      cost += m.cost;
+      portions += m.portions;
+      const x = m.dish.macros || {};
+      macros.kcal += x.kcal || 0;
+      macros.p += x.p || 0;
+      macros.f += x.f || 0;
+      macros.c += x.c || 0;
+    });
+  });
+  return {
+    cost: cost,
+    portions: portions,
+    macros: {
+      kcal: Math.round(macros.kcal),
+      p: Math.round(macros.p),
+      f: Math.round(macros.f),
+      c: Math.round(macros.c)
+    }
+  };
+}
+
+function fitPlanBudget(plan, budget, goal, avoidProduct) {
+  const limit = Math.max(0, Number(budget) || 0);
+  const fitGoal = goal || 'balanced';
+  const avoid = String(avoidProduct || '').trim();
+  const pools = {};
+  weekSlots().forEach(function (slot) {
+    pools[slot] = dishCandidates(slot).filter(function (dish) {
+      return !avoid || !dishHasProductName(dish, avoid);
+    }).sort(function (a, b) {
+      return dishCost(a, false) - dishCost(b, false);
+    });
+  });
+
+  function repair(maxIterations) {
+    const cs = budgetCostState(plan);
+    const start = cs.total;
+    const swaps = [];
+    let guard = 0;
+    while (cs.total > limit && guard++ < maxIterations) {
+      let best = null;
+      plan.days.forEach(function (day, dayIndex) {
+        daySlots(dayIndex).forEach(function (slot) {
+          const current = mealInfo(day, slot);
+          if (!current) return;
+          const currentMap = dishContribution(current.dish, current.k);
+          const target = macroTargetForSlot(slot);
+          const pool = pools[slot] || [];
+          pool.forEach(function (dish) {
+            if (dish.id === current.dish.id) return;
+            const nextMap = dishContribution(dish, current.k);
+            const trial = costStateTrial(cs, currentMap, nextMap);
+            if (trial >= cs.total) return;
+            const damage = macroDeviation(dish.macros, target);
+            const goalBonus = Math.max(-6, Math.min(6, -dishGoalScore(dish, fitGoal, target))) * 1.1;
+            const score = (cs.total - trial) - damage * 5.5 + goalBonus;
+            if (!best || score > best.score) {
+              best = {
+                day: day, dayIndex: dayIndex, slot: slot, dish: dish,
+                total: trial, score: score, currentMap: currentMap, nextMap: nextMap,
+                family: current.family, totalBefore: cs.total
+              };
+            }
+          });
+        });
+      });
+      if (!best) break;
+      best.day.meals[best.slot] = { dishId: best.dish.id, family: best.family };
+      costStateApply(cs, best.currentMap, best.nextMap);
+      swaps.push({ day: best.dayIndex, slot: best.slot, dish: best.dish.name });
+    }
+    return { shopping: cs.total, start: start, swaps: swaps };
+  }
+
+  let result = repair(80);
+  let usedCheapest = false;
+  let rebuiltChanged = 0;
+
+  if (result.shopping > limit) {
+    usedCheapest = true;
+    const days = [];
+    plan.days.forEach(function (day, dayIndex) {
+      const meals = {};
+      const skipped = [];
+      daySlots(dayIndex).forEach(function (slot) {
+        const current = mealInfo(day, slot);
+        const pool = pools[slot] || [];
+        if (!current || !pool.length) { skipped.push(slot); return; }
+        if (current.dish.id !== pool[0].id) rebuiltChanged++;
+        meals[slot] = { dishId: pool[0].id, family: current.family };
+      });
+      days.push({ meals: meals, skipped: skipped });
+    });
+    plan.days = days;
+    result = repair(120);
+  }
+
+  const finalShopping = shoppingInfoFor(plan).total;
+  return {
+    shopping: finalShopping,
+    plannedShopping: result.shopping,
+    over: finalShopping > limit,
+    swaps: result.swaps,
+    changed: rebuiltChanged + result.swaps.length,
+    usedCheapest: usedCheapest
+  };
+}
+
+function planMetrics(plan) {
+  const p = plan || state.plan;
+  if (!p) return null;
+  const shop = shoppingInfoFor(p);
+  const macros = { kcal: 0, p: 0, f: 0, c: 0 };
+  const unique = {};
+  let meals = 0, cost = 0, fish = 0, veg = 0;
+  p.days.forEach(function (day, dayIndex) {
+    daySlots(dayIndex).forEach(function (slot) {
+      const m = mealInfo(day, slot);
+      if (!m) return;
+      meals++;
+      unique[m.dish.id] = true;
+      cost += m.cost;
+      const x = m.dish.macros || {};
+      macros.kcal += x.kcal || 0;
+      macros.p += x.p || 0;
+      macros.f += x.f || 0;
+      macros.c += x.c || 0;
+      if (dishHasIngredient(m.dish, FISH_IDS)) fish++;
+      veg += dishVegGrams(m.dish);
+    });
+  });
+  macros.kcal = Math.round(macros.kcal);
+  macros.p = Math.round(macros.p);
+  macros.f = Math.round(macros.f);
+  macros.c = Math.round(macros.c);
+  return {
+    shopping: shop.total,
+    cost: cost,
+    meals: meals,
+    unique: Object.keys(unique).length,
+    fish: fish,
+    veg: Math.round(veg),
+    macros: macros
+  };
+}
+function changedMealCount(planA, planB) {
+  if (!planA || !planB) return 0;
+  let changed = 0;
+  for (let day = 0; day < 7; day++) {
+    const a = planA.days[day] || { meals: {} };
+    const b = planB.days[day] || { meals: {} };
+    Object.keys(b.meals || {}).forEach(function (slot) {
+      const aId = a.meals && a.meals[slot] ? a.meals[slot].dishId : null;
+      if (aId !== b.meals[slot].dishId) changed++;
+    });
+  }
+  return changed;
+}
+function reducePlanCalories(targetTotal) {
+  let current = planMetrics().macros.kcal;
+  let guard = 0;
+  while (current > targetTotal && guard++ < 10) {
+    const cs = budgetCostState(state.plan);
+    let best = null;
+    state.plan.days.forEach(function (day, dayIndex) {
+      daySlots(dayIndex).forEach(function (slot) {
+        const m = mealInfo(day, slot);
+        if (!m) return;
+        const currentKcal = (m.dish.macros && m.dish.macros.kcal) || 0;
+        if (currentKcal < 120) return;
+        const currentMap = dishContribution(m.dish, m.k);
+        const target = macroTargetForSlot(slot);
+        (dishCandidates(slot) || []).forEach(function (dish) {
+          if (dish.id === m.dish.id) return;
+          const kcal = (dish.macros && dish.macros.kcal) || 0;
+          if (kcal >= currentKcal - 60) return;
+          const trial = costStateTrial(cs, currentMap, dishContribution(dish, m.k));
+          if (trial > state.budget + 0.5) return;
+          const reduction = currentKcal - kcal;
+          const score = reduction - macroDeviation(dish.macros, target) * 90;
+          if (!best || score > best.score) {
+            best = { dayIndex: dayIndex, slot: slot, dish: dish, reduction: reduction, score: score };
+          }
+        });
+      });
+    });
+    if (!best) break;
+    setPlanMeal(best.dayIndex, best.slot, best.dish);
+    current -= best.reduction;
+  }
+  return planMetrics().macros.kcal;
+}
+function goalPlanScore(goal, m) {
+  if (!m) return -Infinity;
+  if (goal === 'protein') return m.macros.p * 10 - m.shopping * 0.05;
+  if (goal === 'cheap') return -m.shopping * 10 - m.macros.kcal * 0.001;
+  if (goal === 'fish') return m.fish * 1000 - m.shopping * 0.05;
+  if (goal === 'veg') return m.veg * 10 - m.shopping * 0.03;
+  if (goal === 'light') return -m.macros.kcal * 10 - m.shopping * 0.03;
+  if (goal === 'variety') return m.unique * 1000 - m.shopping * 0.03;
+  return -m.shopping;
+}
+
+/* Проверяет текущий план и при необходимости чинит его под бюджет.
+   Если даже самый дешёвый набор дороже — бюджет поднимается прозрачно,
+   но сама закупка никогда не остаётся выше доступной суммы. */
+function ensureCurrentPlanBudget(avoidProduct) {
+  if (!state.plan) return null;
+  const before = shoppingInfoFor(state.plan).total;
+  const avoid = String(avoidProduct || '').trim();
+  const hasAvoid = avoid && state.plan.days.some(function (day, i) {
+    return daySlots(i).some(function (slot) {
+      const m = mealInfo(day, slot);
+      return !!m && dishHasProductName(m.dish, avoid);
+    });
+  });
+  if (before <= state.budget && !hasAvoid) {
+    state.plan.budgetInfo = Object.assign({}, state.plan.budgetInfo || {}, {
+      shopping: before, limit: state.budget, raised: null
+    });
+    return { before: before, shopping: before, changed: 0, raised: null, usedCheapest: false };
+  }
+  const goal = state.plan.goal || 'balanced';
+  const fit = fitPlanBudget(state.plan, state.budget, goal, avoid);
+  let after = shoppingInfoFor(state.plan).total;
+  let raised = null;
+  if (after > state.budget) {
+    const from = state.budget;
+    const needed = Math.ceil(after / CONFIG.budgetStep) * CONFIG.budgetStep;
+    state.budget = Math.max(state.budget, Math.min(CONFIG.budgetCeiling, needed));
+    raised = { from: from, to: state.budget, minimum: after };
+    after = shoppingInfoFor(state.plan).total;
+    if (after > state.budget) {
+      state.budget = Math.max(state.budget, after);
+      raised.to = state.budget;
+    }
+  }
+  state.plan.budgetInfo = {
+    shopping: after,
+    limit: state.budget,
+    raised: raised,
+    changed: fit.changed,
+    usedCheapest: fit.usedCheapest
+  };
+  return {
+    before: before,
+    shopping: after,
+    changed: fit.changed,
+    raised: raised,
+    usedCheapest: fit.usedCheapest
+  };
+}
+
+function generatePlan(options) {
+  const opts = options || {};
+  const goal = opts.goal || 'balanced';
   const slotsAll = weekSlots();
   if (!slotsAll.length) return false;
   const pools = {};
@@ -1111,13 +1502,17 @@ function generatePlan() {
   const lastUsed = {};
   slotsAll.forEach(function (slot) { lastUsed[slot] = {}; });
   const dailyBudget = Math.max(700, state.budget / 7);
+  const costWeight = goal === 'cheap' ? 1.35 : 0.38;
+  const repeatWeight = goal === 'variety' ? 1.7 : 0.65;
   let projectedCost = 0;
+  let fishWeek = 0;
 
   for (let day = 0; day < 7; day++) {
     const slots = daySlots(day);
     const meals = {};
     const skipped = [];
     let dayCost = 0;
+    let fishDay = 0;
     const dayMacro = { kcal: 0, p: 0, f: 0, c: 0 };
     const dayTarget = macroTargetForSlots(slots);
 
@@ -1126,11 +1521,14 @@ function generatePlan() {
       if (!pool.length) { skipped.push(slot); return; }
       const family = isFamilySlot(slot, day);
       const slotTarget = macroTargetForSlot(slot);
+      const goalTarget = Object.assign({}, slotTarget);
+      if (goal === 'protein') goalTarget.p *= 1.28;
+      if (goal === 'light') { goalTarget.kcal *= 0.88; goalTarget.c *= 0.92; }
 
       const scored = pool.map(function (dish) {
         const macros = dish.macros || { kcal: 0, p: 0, f: 0, c: 0 };
         const cost = dishCost(dish, family);
-        let score = macroDeviation(macros, slotTarget);
+        let score = macroDeviation(macros, goalTarget);
 
         /* Не даём дню сильно уйти за норму, но оставляем пространство
            для блюд с чуть большей калорийностью. */
@@ -1142,12 +1540,22 @@ function generatePlan() {
         };
         score += macroDeviation(after, dayTarget) * 0.28;
 
+        /* Цель пользователя: больше белка, рыбы, овощей или легкости. */
+        score += dishGoalScore(dish, goal, slotTarget);
+
+        /* Ограничиваем рыбу: не больше нормы в неделю и не больше
+           одного рыбного блюда в день, чтобы меню не стало однообразным. */
+        if (goal === 'fish' && dishHasIngredient(dish, FISH_IDS)) {
+          if (fishWeek >= FISH_WEEK_CAP) score += 6;
+          else if (fishDay >= 1) score += 2.4;
+        }
+
         /* Разнообразие: блюдо, которое было недавно, получает штраф. */
         const last = lastUsed[slot][dish.id];
-        if (last !== undefined) score += Math.max(0, 3 - (day - last)) * 0.65;
+        if (last !== undefined) score += Math.max(0, 3 - (day - last)) * repeatWeight;
 
         /* Мягко удерживаем неделю в бюджете. */
-        score += (cost / Math.max(1, dailyBudget)) * 0.38;
+        score += (cost / Math.max(1, dailyBudget)) * costWeight;
         if (projectedCost + cost > state.budget) score += 0.75;
 
         return { dish: dish, cost: cost, score: score + Math.random() * 0.12 };
@@ -1167,6 +1575,7 @@ function generatePlan() {
       meals[slot] = { dishId: chosen.id, family: family };
       lastUsed[slot][chosen.id] = day;
       dayCost += pick.cost;
+      if (dishHasIngredient(chosen, FISH_IDS)) { fishWeek++; fishDay++; }
       const m = chosen.macros || { kcal: 0, p: 0, f: 0, c: 0 };
       dayMacro.kcal += m.kcal; dayMacro.p += m.p; dayMacro.f += m.f; dayMacro.c += m.c;
     });
@@ -1178,8 +1587,30 @@ function generatePlan() {
   state.plan = {
     createdAt: Date.now(),
     days: days,
+    goal: goal,
     partial: days.some(function (d) { return d.skipped.length > 0; }),
     macroTargets: Object.assign({}, CONFIG.macroTargets)
+  };
+
+  /* Жёсткий бюджет: чиним план по реальной закупке целыми упаковками. */
+  const fit = fitPlanBudget(state.plan, state.budget, goal);
+  let budgetRaised = null;
+  if (fit.shopping > state.budget) {
+    const from = state.budget;
+    const needed = Math.ceil(fit.shopping / CONFIG.budgetStep) * CONFIG.budgetStep;
+    state.budget = Math.max(state.budget, Math.min(CONFIG.budgetCeiling, needed));
+    budgetRaised = { from: from, to: state.budget, minimum: fit.shopping };
+    if (fit.shopping > state.budget) {
+      state.budget = Math.max(state.budget, fit.shopping);
+      budgetRaised.to = state.budget;
+    }
+  }
+  state.plan.budgetInfo = {
+    shopping: fit.shopping,
+    limit: state.budget,
+    raised: budgetRaised,
+    changed: fit.changed,
+    usedCheapest: fit.usedCheapest
   };
   state.shoppingChecked = [];
   saveState();
@@ -1238,6 +1669,8 @@ function planInfo() {
   const cost = days.reduce(function (sum, d) { return sum + (d ? d.cost : 0); }, 0);
   const portions = days.reduce(function (sum, d) { return sum + (d ? d.meals.length : 0); }, 0);
   const perPerson = Math.round(cost / Math.max(1, peopleCount()));
+  const shopping = shoppingInfoFor(state.plan);
+  const spent = shopping.total;
   const macroTotals = { kcal: 0, p: 0, f: 0, c: 0 };
   const macroTargetsTotal = { kcal: 0, p: 0, f: 0, c: 0 };
   let plannedDays = 0;
@@ -1265,15 +1698,16 @@ function planInfo() {
   return {
     days: days,
     cost: cost,
+    spent: spent,
     perPerson: perPerson,
     portions: portions,
-    over: cost - state.budget,
-    under: cost <= state.budget,
+    over: spent - state.budget,
+    under: spent <= state.budget,
     macros: macroAvg,
     macroTotals: macroTotals,
     plannedDays: plannedDays,
     macroTargets: macroTargets,
-    shopping: shoppingInfo()
+    shopping: shopping
   };
 }
 
@@ -1306,11 +1740,11 @@ function packsFor(id, qty) {
   };
 }
 
-function shoppingInfo() {
+function shoppingInfoFor(plan) {
   const map = {};
   const pantry = new Set(state.pantry || []);
-  if (!state.plan) return { items: [], groups: [], total: 0, count: 0, checked: 0 };
-  state.plan.days.forEach(function (day, dayIndex) {
+  if (!plan) return { items: [], groups: [], total: 0, count: 0, checked: 0 };
+  plan.days.forEach(function (day, dayIndex) {
     daySlots(dayIndex).forEach(function (slot) {
       const m = mealInfo(day, slot);
       if (!m) return;
@@ -1358,6 +1792,9 @@ function shoppingInfo() {
   const checked = items.filter(function (it) { return state.shoppingChecked.indexOf(it.ing.id) !== -1; }).length;
   return { items: items, groups: groups, total: total, gramsTotal: Math.round(gramsTotal), count: items.length, checked: checked, pantrySize: pantry.size };
 }
+function shoppingInfo() {
+  return shoppingInfoFor(state.plan);
+}
 
 /* ───────── ОБЩИЕ HTML-БЛОКИ ───────── */
 function ringSVG(ratio, label, sub, size, color) {
@@ -1395,7 +1832,7 @@ function macroProgressHTML(macros, targets, title, subtitle) {
   return '<div class="card macro-progress-card">' +
     '<div class="macro-progress-head"><div><div class="macro-progress-title">' + esc(title || 'БЖУ') + '</div>' +
     (subtitle ? '<div class="macro-progress-sub">' + esc(subtitle) + '</div>' : '') + '</div>' +
-    '<span class="macro-badge ' + (allOk ? 'ok' : 'warn') + '">' + (allOk ? '✓ в балансе' : '≈ к норме') + '</span></div>' +
+    '<span class="macro-badge ' + (allOk ? 'ok' : 'warn') + '">' + (allOk ? '✓ в балансе' : '⚠️ не в балансе') + '</span></div>' +
     '<div class="macro-progress-list">' + html + '</div></div>';
 }
 function logoHTML() {
@@ -1827,13 +2264,13 @@ function renderStepBudget() {
   const n = peopleCount();
   const perPerson = Math.round((state.budget / Math.max(1, n)) / 50) * 50;
   const level = budgetLevel();
-  const fill = ((state.budget - CONFIG.minBudget) / (CONFIG.maxBudget - CONFIG.minBudget)) * 100;
+  const fill = Math.max(0, Math.min(100, ((state.budget - CONFIG.minBudget) / (CONFIG.maxBudget - CONFIG.minBudget)) * 100));
   return '<section class="screen onboarding">' +
     '<div class="screen-body">' +
     wizardHeader() +
     '<header class="page-head"><h1>Бюджет на неделю</h1>' +
     '<p class="sub">Не будем предлагать то, что в него не влезет.</p></header>' +
-    '<div class="budget-value" id="budget-value">' + (state.budget >= CONFIG.maxBudget ? fmtMoney(CONFIG.maxBudget) + '+' : fmtMoney(state.budget)) + '</div>' +
+    '<div class="budget-value" id="budget-value">' + (state.budget > CONFIG.maxBudget ? fmtMoney(state.budget) : (state.budget >= CONFIG.maxBudget ? fmtMoney(CONFIG.maxBudget) + '+' : fmtMoney(state.budget))) + '</div>' +
     '<div class="slider-wrap">' +
     '<input type="range" id="budget-slider" min="' + CONFIG.minBudget + '" max="' + CONFIG.maxBudget + '" step="' + CONFIG.budgetStep + '" value="' + state.budget + '" style="--fill:' + fill + '%" aria-label="Бюджет на неделю">' +
     '<div class="slider-scale"><span>' + fmtMoney(CONFIG.minBudget) + '</span><span>' + fmtMoney(CONFIG.maxBudget) + '+</span></div>' +
@@ -1976,14 +2413,24 @@ function renderWeek() {
   const info = planInfo();
   if (!info) { state.ui.screen = 'onboarding'; return renderOnboarding(); }
   const shop = info.shopping;
-  const ringLabel = info.cost >= 10000 ? Math.round(info.cost / 1000) + 'k' : fmtNum(info.cost);
+  const spent = shop.total;
+  const ringLabel = spent >= 10000 ? Math.round(spent / 1000) + 'k' : fmtNum(spent);
   const ringColor = info.under ? '#2F9E63' : '#E96D3F';
   const store = getStore();
   const budgetLine = info.under
-    ? '<div class="budget-line ok">✅ Бюджет: ' + fmtMoney(state.budget) + ' · остаток ' + fmtMoney(state.budget - info.cost) + '</div>'
-    : '<div class="budget-line over">⚠️ Превышение: ' + fmtMoney(info.over) + '</div>';
-  const purchaseLine = shop.total > info.cost * 1.05
-    ? '<div class="purchase-line">🛒 Закупка целыми упаковками ≈ ' + fmtMoney(shop.total) + '</div>'
+    ? '<div class="budget-line ok">✅ Закупка ' + fmtMoney(spent) + ' · бюджет ' + fmtMoney(state.budget) + ' · остаток ' + fmtMoney(state.budget - spent) + '</div>'
+    : '<div class="budget-line over">⚠️ Закупка ' + fmtMoney(spent) + ' · превышение ' + fmtMoney(Math.abs(info.over)) + '</div>';
+  const purchaseLine = info.cost !== spent
+    ? '<div class="purchase-line">📦 По граммам ≈ ' + fmtMoney(info.cost) + ' · считаем целыми упаковками</div>'
+    : '';
+  const raised = state.plan && state.plan.budgetInfo && state.plan.budgetInfo.raised;
+  const raisedBanner = raised
+    ? '<div class="banner warning small"><span class="banner-emoji">⚖️</span><div><div class="banner-title">Бюджет поднят до ' + fmtMoney(raised.to) + '</div><div class="banner-text">Минимальный набор из доступных блюд стоит ' + fmtMoney(raised.minimum) + '. Иначе закупка превысила бы бюджет.</div></div></div>'
+    : '';
+  const lowProtein = info.macros.p < Math.round(info.macroTargets.p * 0.65);
+  const proteinBanner = lowProtein && !raised
+    ? '<div class="banner warning small"><span class="banner-emoji">🥩</span><div><div class="banner-title">Белка маловато</div><div class="banner-text">' +
+      info.macros.p + ' из ' + info.macroTargets.p + ' г в день. Подними бюджет или добавь яйца, творог и бобовые — я пересоберу рацион.</div></div></div>'
     : '';
   const region = getRegion();
   const regionThumb = region.photoThumb || 'assets/stores/orsk-thumb.jpg';
@@ -2022,11 +2469,13 @@ function renderWeek() {
     '<span class="shop-hero-sub">Всё, что нужно купить на неделю</span>' +
     '</button>' +
     (state.plan && state.plan.partial ? '<div class="banner warning small"><span class="banner-emoji">⚠️</span><div><div class="banner-title">Часть блюд не подобралась</div><div class="banner-text">Не смогли подобрать блюда для части приёмов — ослабь ограничения.</div></div></div>' : '') +
+    raisedBanner +
+    proteinBanner +
     '<div class="card summary-card">' +
-    '<div class="summary-ring">' + ringSVG(info.under ? info.cost / Math.max(1, state.budget) : 0.98, ringLabel, 'всего', 92, ringColor) + '</div>' +
+    '<div class="summary-ring">' + ringSVG(info.under ? spent / Math.max(1, state.budget) : 1, ringLabel, 'закупка', 92, ringColor) + '</div>' +
     '<div class="summary-text">' +
-    '<div class="summary-label">💰 Стоимость плана</div>' +
-    '<div class="summary-days">' + peopleCount() + ' ' + pluralPeople(peopleCount()) + ' · <span class="nowrap">' + fmtMoney(info.perPerson) + ' ₽/чел.</span></div>' +
+    '<div class="summary-label">💰 Закупка на неделю</div>' +
+    '<div class="summary-days">' + peopleCount() + ' ' + pluralPeople(peopleCount()) + ' · <span class="nowrap">' + fmtMoney(info.perPerson) + '/чел.</span></div>' +
     budgetLine +
     purchaseLine +
     '</div></div>' +
@@ -2099,7 +2548,7 @@ function renderToday() {
       '<img class="today-dish-img" src="' + esc(m.dish.image) + '" alt="">' +
       '<div class="today-dish-info"><span class="today-dish-slot">' + CONFIG.meals[m.slot].name + '</span><span class="today-dish-name">' + esc(m.dish.name) + '</span>' +
       '<span class="today-dish-meta">🕐 ' + m.dish.timeMin + ' мин · ' + m.portions + ' ' + pluralPortions(m.portions) + '</span></div>' +
-      '<span class="today-dish-price">' + fmtMoney(m.cost) + ' ₽</span>' +
+      '<span class="today-dish-price">' + fmtMoney(m.cost) + '</span>' +
       '</button>' +
       (isLast ? '<button type="button" class="btn btn-primary today-cook" data-action="start-cooking">Приготовить ' + esc(m.dish.name) + '</button>' : '') +
       '</div>';
@@ -2180,12 +2629,16 @@ function renderShopping() {
     '<div class="shop-progress-text"><div class="shop-progress-big" id="shop-progress-big">' + checked + ' из ' + total + '</div>' +
     '<p class="hint">Отмечай, что уже в корзине</p>' +
     '<div class="shop-total">Итого ≈ ' + fmtMoney(shop.total) + '</div>' +
-    '<div class="shop-total-note">с учётом целых упаковок · по граммам ' + fmtMoney(shop.gramsTotal) + '</div></div>' +
+    '<div class="shop-total-note">с учётом целых упаковок · по граммам ' + fmtMoney(shop.gramsTotal) + '</div>' +
+    '<div class="budget-line ' + (shop.total <= state.budget ? 'ok' : 'over') + '">' +
+    (shop.total <= state.budget
+      ? '✅ В бюджет: ' + fmtMoney(shop.total) + ' из ' + fmtMoney(state.budget) + ' · остаток ' + fmtMoney(state.budget - shop.total)
+      : '⚠️ Превышение: ' + fmtMoney(shop.total - state.budget)) + '</div></div>' +
     '<div id="shop-ring">' + ringSVG(ratio, Math.round(ratio * 100) + '%', 'готово', 88, '#2F9E63') + '</div>' +
     '</div>' +
     (store && store.deliveryUrl ? '<a class="btn btn-secondary shop-delivery-btn" href="' + esc(store.deliveryUrl) + '" target="_blank" rel="noopener">Открыть ' + esc(store.name) + ' ↗</a>' : '') +
     groups +
-    '<p class="week-footnote">Сумма списка — с целыми упаковками, поэтому обычно выше плана: остатки продуктов останутся на следующие недели. Точную сумму и наличие проверяй в корзине доставки.</p>' +
+    '<p class="week-footnote">Сумма списка уже с целыми упаковками и всегда укладывается в бюджет. Остатки продуктов перейдут на следующие недели. Точную сумму и наличие проверяй в корзине доставки.</p>' +
     '</div></section>';
 }
 
@@ -2445,15 +2898,24 @@ function replaceDish() {
   const pool = dishCandidates(slot).slice().sort(function (a, b) { return a.id.localeCompare(b.id); });
   if (!pool.length) { toast('Других вариантов нет'); return; }
   const curIdx = pool.findIndex(function (d) { return d.id === current.dish.id; });
-  const next = pool[(curIdx + 1 + pool.length) % pool.length];
-  if (!next || next.id === current.dish.id) { toast('Других вариантов нет'); return; }
+  const cs = budgetCostState(state.plan);
+  const currentMap = dishContribution(current.dish, current.k);
+  let next = null;
+  for (let step = 1; step < pool.length; step++) {
+    const candidate = pool[(curIdx + step + pool.length) % pool.length];
+    if (!candidate || candidate.id === current.dish.id) continue;
+    const trial = costStateTrial(cs, currentMap, dishContribution(candidate, current.k));
+    if (trial <= state.budget + 0.5) { next = candidate; break; }
+  }
+  if (!next) { toast('Все другие варианты выходят за бюджет'); return; }
   state.plan.days[dayIdx].meals[slot] = { dishId: next.id, family: current.family };
   state.plan.createdAt = Date.now();
   state.plan.partial = state.plan.days.some(function (d) { return d.skipped && d.skipped.length; });
+  const guard = ensureCurrentPlanBudget();
   saveState();
   recordReplacement();
   render();
-  toast('Блюдо заменено');
+  toast('Блюдо заменено: ' + next.name + (guard && guard.raised ? ' · бюджет поднят до ' + fmtMoney(guard.raised.to) : ''));
 }
 
 function toast(message) {
@@ -2485,9 +2947,10 @@ function updateBudgetUI() {
   if (!slider || !valueEl) return;
   const n = peopleCount();
   const perPerson = Math.round((state.budget / Math.max(1, n)) / 50) * 50;
-  const fill = ((state.budget - CONFIG.minBudget) / (CONFIG.maxBudget - CONFIG.minBudget)) * 100;
+  const fill = Math.max(0, Math.min(100, ((state.budget - CONFIG.minBudget) / (CONFIG.maxBudget - CONFIG.minBudget)) * 100));
+  slider.value = String(Math.min(CONFIG.maxBudget, Math.max(CONFIG.minBudget, state.budget)));
   slider.style.setProperty('--fill', fill + '%');
-  valueEl.textContent = state.budget >= CONFIG.maxBudget ? '25 000 ₽+' : fmtMoney(state.budget);
+  valueEl.textContent = state.budget > CONFIG.maxBudget ? fmtMoney(state.budget) : (state.budget >= CONFIG.maxBudget ? '25 000 ₽+' : fmtMoney(state.budget));
   if (perEl) perEl.textContent = '≈ ' + fmtMoney(perPerson) + ' на человека в неделю';
   if (bannerEl) bannerEl.innerHTML = budgetBannerHTML();
   if (levelEl) {
@@ -2584,20 +3047,22 @@ function copyMealDay(fromIdx, targets, message) {
       state.dayMeals[i][slot] = Object.assign({}, src[slot]);
     });
   });
+  const guard = ensureCurrentPlanBudget();
   saveState();
   animateNext = false;
   render();
-  toast(message || 'Настройки скопированы');
+  toast((message || 'Настройки скопированы') + (guard && guard.raised ? ' · бюджет поднят до ' + fmtMoney(guard.raised.to) : ''));
 }
 function clearMealDay(dayIdx) {
   const d = clamp(parseInt(dayIdx, 10) || 0, 0, 6);
   CONFIG.mealOrder.forEach(function (slot) {
     state.dayMeals[d][slot] = { self: false, family: false };
   });
+  const guard = ensureCurrentPlanBudget();
   saveState();
   animateNext = false;
   render();
-  toast(CONFIG.days[d] + ': день без готовки');
+  toast(CONFIG.days[d] + ': день без готовки' + (guard && guard.raised ? ' · бюджет поднят до ' + fmtMoney(guard.raised.to) : ''));
 }
 
 /* ───────── СОБЫТИЯ ───────── */
@@ -2702,8 +3167,11 @@ function onClick(e) {
       break;
     case 'map-select-store':
       state.storeId = target.getAttribute('data-id');
-      saveState();
-      toast('Магазин выбран — цены обновлены');
+      {
+        const guard = ensureCurrentPlanBudget();
+        saveState();
+        toast('Магазин выбран — цены обновлены' + (guard && guard.raised ? ' · бюджет поднят до ' + fmtMoney(guard.raised.to) : ''));
+      }
       if (state.ui.mapBack === 'week' && state.plan) setScreen('week');
       else if (state.ui.mapBack === 'shopping' && state.plan) setScreen('shopping');
       else if (state.ui.mapBack === 'profile') openProfile();
@@ -2725,26 +3193,27 @@ function onClick(e) {
     case 'select-store':
       state.storeId = target.getAttribute('data-id');
       animateNext = false;
+      ensureCurrentPlanBudget();
       saveState();
       render();
       break;
     case 'adult-dec':
       state.adults = clamp(state.adults - 1, 1, CONFIG.adultsMax);
-      animateNext = false; saveState(); render();
+      animateNext = false; ensureCurrentPlanBudget(); saveState(); render();
       break;
     case 'adult-inc':
       state.adults = clamp(state.adults + 1, 1, CONFIG.adultsMax);
-      animateNext = false; saveState(); render();
+      animateNext = false; ensureCurrentPlanBudget(); saveState(); render();
       break;
     case 'children-toggle':
       state.childrenAges = state.childrenAges.length ? [] : [7];
-      animateNext = false; saveState(); render();
+      animateNext = false; ensureCurrentPlanBudget(); saveState(); render();
       break;
     case 'child-inc': {
       const i = parseInt(target.getAttribute('data-index'), 10);
       if (state.childrenAges[i] !== undefined) {
         state.childrenAges[i] = clamp(state.childrenAges[i] + 1, CONFIG.ageMin, CONFIG.ageMax);
-        animateNext = false; saveState(); render();
+        animateNext = false; ensureCurrentPlanBudget(); saveState(); render();
       }
       break;
     }
@@ -2752,14 +3221,14 @@ function onClick(e) {
       const i = parseInt(target.getAttribute('data-index'), 10);
       if (state.childrenAges[i] !== undefined) {
         state.childrenAges[i] = clamp(state.childrenAges[i] - 1, CONFIG.ageMin, CONFIG.ageMax);
-        animateNext = false; saveState(); render();
+        animateNext = false; ensureCurrentPlanBudget(); saveState(); render();
       }
       break;
     }
     case 'child-add':
       if (state.childrenAges.length < CONFIG.kidsMax) {
         state.childrenAges.push(7);
-        animateNext = false; saveState(); render();
+        animateNext = false; ensureCurrentPlanBudget(); saveState(); render();
       }
       break;
     case 'meal-toggle': {
@@ -2775,7 +3244,9 @@ function onClick(e) {
           setting.self = !setting.self;
           if (setting.self) setting.family = false;
         }
+        const guard = ensureCurrentPlanBudget();
         animateNext = false; saveState(); render();
+        if (guard && guard.raised) toast('Бюджет поднят до ' + fmtMoney(guard.raised.to) + ': иначе закупка превысила бы бюджет');
       }
       break;
     }
@@ -2900,8 +3371,10 @@ function onClick(e) {
       const pos = state.pantry.indexOf(id);
       if (pos === -1) state.pantry.push(id);
       else state.pantry.splice(pos, 1);
+      const guard = ensureCurrentPlanBudget();
       saveState();
       render();
+      if (guard && guard.raised) toast('Бюджет поднят до ' + fmtMoney(guard.raised.to) + ': без этого продукта закупка не влезала');
       break;
     }
     case 'ai-toggle':
@@ -3078,7 +3551,12 @@ function onInput(e) {
     return;
   }
   if (el.id === 'budget-slider') {
-    state.budget = clamp(parseInt(el.value, 10) || CONFIG.defaultBudget, CONFIG.minBudget, CONFIG.maxBudget);
+    state.budget = clamp(parseInt(el.value, 10) || CONFIG.defaultBudget, CONFIG.minBudget, CONFIG.budgetCeiling);
+    if (e.type === 'change' && state.plan) {
+      const guard = ensureCurrentPlanBudget();
+      if (guard && guard.raised) toast('Бюджет поднят до ' + fmtMoney(guard.raised.to) + ': минимальный набор стоит ' + fmtMoney(guard.raised.minimum));
+      else if (guard && guard.changed) toast('Подогнал ' + guard.changed + ' блюд под новый бюджет');
+    }
     updateBudgetUI();
     saveState();
   }
@@ -3159,15 +3637,323 @@ function buildAIContext() {
     macros: info ? info.macros : { kcal: 0, p: 0, f: 0, c: 0 },
     people: peopleCount(),
     budget: state.budget,
-    cost: info ? info.cost : 0,
+    cost: shop.total,
+    planCost: info ? info.cost : 0,
     over: info ? info.over : 0,
     under: info ? info.under : true,
+    budgetRaised: state.plan && state.plan.budgetInfo ? state.plan.budgetInfo.raised : null,
     store: store ? store.name : 'не выбран',
     region: region ? region.name : 'Орск',
     priceSource: snap ? (snap.source || 'снимок цен') : 'базовые цены',
     allergies: realAllergies(),
     stops: state.stop.slice()
   };
+}
+
+/* ───────── КОМАНДЫ ИИ ─────────
+   ИИ не считает бюджет и БЖУ сам: он только просит приложение
+   пересобрать рацион, а суммы и упаковки считает код. */
+function dishHasProductName(dish, name) {
+  if (!name) return false;
+  return dish.ingredients.some(function (it) {
+    return ING[it.ingId] && ingredientMatchesStop(ING[it.ingId], [name]);
+  });
+}
+function bestMealReplacement(dayIdx, slot, options) {
+  const opts = options || {};
+  if (!state.plan || !state.plan.days[dayIdx]) return null;
+  const current = mealInfo(state.plan.days[dayIdx], slot);
+  if (!current) return null;
+  const pool = dishCandidates(slot);
+  if (!pool.length) return null;
+  const cs = budgetCostState(state.plan);
+  const currentMap = dishContribution(current.dish, current.k);
+  const target = macroTargetForSlot(slot);
+  const used = {};
+  state.plan.days.forEach(function (day, di) {
+    daySlots(di).forEach(function (s) {
+      const m = mealInfo(day, s);
+      if (m) used[m.dish.id] = (used[m.dish.id] || 0) + 1;
+    });
+  });
+  const mainIds = FISH_IDS.concat(MEAT_IDS).concat(['tofu', 'beans', 'cottage_cheese', 'egg']);
+  const currentMain = {};
+  current.dish.ingredients.forEach(function (it) {
+    if (mainIds.indexOf(it.ingId) !== -1) currentMain[it.ingId] = true;
+  });
+
+  const ranked = [];
+  pool.forEach(function (dish) {
+    if (dish.id === current.dish.id) return;
+    if (opts.maxTime && dish.timeMin > opts.maxTime) return;
+    if (opts.excludeName && dishHasProductName(dish, opts.excludeName)) return;
+    if (opts.requireFish && !dishHasIngredient(dish, FISH_IDS)) return;
+    const nextMap = dishContribution(dish, current.k);
+    const trial = costStateTrial(cs, currentMap, nextMap);
+    const maxTotal = state.budget + Math.max(0, Number(opts.slack) || 0);
+    if (trial > maxTotal + 0.5) return;
+    let score = macroDeviation(dish.macros, target) * 1.25;
+    if (opts.goal) score += dishGoalScore(dish, opts.goal, target) * 1.2;
+    score += (trial / Math.max(1, state.budget)) * 0.6;
+    if (used[dish.id]) score += 0.35 * used[dish.id];
+    if (dish.ingredients.some(function (it) { return currentMain[it.ingId]; })) score += 0.45;
+    ranked.push({ dish: dish, trial: trial, score: score });
+  });
+  ranked.sort(function (a, b) { return a.score - b.score || a.trial - b.trial; });
+  return ranked[0] || null;
+}
+function setPlanMeal(dayIdx, slot, dish) {
+  const current = mealInfo(state.plan.days[dayIdx], slot);
+  if (!current) return false;
+  state.plan.days[dayIdx].meals[slot] = { dishId: dish.id, family: current.family };
+  state.plan.createdAt = Date.now();
+  state.plan.partial = state.plan.days.some(function (d) { return d.skipped && d.skipped.length; });
+  return true;
+}
+function regenerateForGoal(goal, attempts) {
+  if (!state.plan) return null;
+  const beforePlan = state.plan;
+  const beforeMetrics = planMetrics(beforePlan);
+  const startBudget = state.budget;
+  let best = null;
+  const tries = Math.max(1, attempts || 1);
+  for (let i = 0; i < tries; i++) {
+    state.budget = startBudget;
+    if (!generatePlan({ goal: goal })) break;
+    const metrics = planMetrics(state.plan);
+    const score = goalPlanScore(goal, metrics);
+    if (!best || score > best.score) {
+      best = {
+        plan: JSON.parse(JSON.stringify(state.plan)),
+        metrics: metrics,
+        budget: state.budget,
+        score: score
+      };
+    }
+  }
+  if (!best) {
+    state.plan = beforePlan;
+    state.budget = startBudget;
+    return null;
+  }
+  state.plan = best.plan;
+  state.budget = Math.max(startBudget, best.budget);
+  const raised = state.plan.budgetInfo ? state.plan.budgetInfo.raised : null;
+  saveState();
+  return {
+    before: beforeMetrics,
+    after: best.metrics,
+    beforePlan: beforePlan,
+    budget: state.budget,
+    changed: changedMealCount(beforePlan, state.plan),
+    raised: raised
+  };
+}
+function budgetSentence(metrics, raiseInfo) {
+  if (raiseInfo) {
+    return 'Закупка ' + fmtMoney(metrics.shopping) + '. Минимальный набор из доступных блюд стоит ' +
+      fmtMoney(raiseInfo.minimum) + ', поэтому бюджет поднят до ' + fmtMoney(state.budget) +
+      ' — иначе он был бы превышен.';
+  }
+  return 'Закупка ' + fmtMoney(metrics.shopping) + ' из ' + fmtMoney(state.budget) +
+    ' · остаток ' + fmtMoney(Math.max(0, state.budget - metrics.shopping)) + '.';
+}
+
+function runAIPlanCommand(command) {
+  const cmd = command || {};
+  if (!state.plan) {
+    return { ok: false, text: 'Сначала сгенерируй рацион на неделю — тогда я смогу его менять.' };
+  }
+  const type = String(cmd.type || '');
+
+  if (type === 'budget') {
+    const amount = clamp(Math.round((parseInt(cmd.amount, 10) || state.budget) / CONFIG.budgetStep) * CONFIG.budgetStep, CONFIG.minBudget, CONFIG.budgetCeiling);
+    state.budget = amount;
+    const guard = ensureCurrentPlanBudget();
+    saveState();
+    render();
+    const parts = ['Бюджет на неделю: ' + fmtMoney(state.budget) + '.'];
+    if (guard && guard.changed) parts.push('Заменил ' + guard.changed + ' ' + pluralize(guard.changed, ['блюдо', 'блюда', 'блюд']) + ' на более дешёвые.');
+    if (guard && guard.raised) {
+      parts.push('Уложиться в ' + fmtMoney(guard.raised.from) + ' не получилось: даже минимальный набор стоит ' +
+        fmtMoney(guard.raised.minimum) + ', поэтому бюджет поднят до ' + fmtMoney(guard.raised.to) + '.');
+    }
+    parts.push('Закупка сейчас ' + fmtMoney(guard ? guard.shopping : 0) + ' из ' + fmtMoney(state.budget) + '.');
+    if (state.budget / Math.max(1, peopleCount()) < CONFIG.basePerPerson * 0.6) {
+      parts.push('⚠️ Это ниже расчётного бюджета: на ' + peopleCount() + ' ' + pluralPeople(peopleCount()) +
+        ' блюда будут проще, белка может не хватать. Если тяжело — подними бюджет или добавь яйца, творог и бобовые.');
+    }
+    return { ok: true, text: parts.join('\n'), changed: guard ? guard.changed : 0 };
+  }
+
+  if (type === 'replace') {
+    const dayIdx = cmd.day !== undefined && cmd.day !== null
+      ? clamp(parseInt(cmd.day, 10) || 0, 0, 6)
+      : (state.ui.screen === 'day' ? clamp(parseInt(state.ui.dayId, 10) || 0, 0, 6) : todayIndex());
+    const slot = CONFIG.mealOrder.indexOf(cmd.slot) !== -1 ? cmd.slot : 'dinner';
+    const current = mealInfo(state.plan.days[dayIdx], slot);
+    if (!current) return { ok: false, text: 'В этот день ' + CONFIG.meals[slot].lower + ' не запланирован.' };
+    const pick = bestMealReplacement(dayIdx, slot, {
+      goal: cmd.goal || '',
+      maxTime: cmd.maxTime,
+      requireFish: cmd.goal === 'fish'
+    });
+    if (!pick) return { ok: false, text: 'Не нашёл замену в рамках бюджета. Попробуй ослабить фильтры или поднять бюджет.' };
+    setPlanMeal(dayIdx, slot, pick.dish);
+    const guard = ensureCurrentPlanBudget();
+    saveState();
+    render();
+    return {
+      ok: true,
+      changed: 1,
+      text: 'Заменил ' + CONFIG.meals[slot].lower + ' в ' + CONFIG.days[dayIdx].toLowerCase() + ': «' +
+        current.dish.name + '» → «' + pick.dish.name + '».\n' + budgetSentence(planMetrics(), guard && guard.raised)
+    };
+  }
+
+  if (type === 'exclude') {
+    const product = String(cmd.product || '').trim();
+    if (!product) return { ok: false, text: 'Уточни, какой продукт убрать.' };
+    let changed = 0;
+    const passes = [0, Math.max(250, Math.round(state.budget * 0.05)), Math.max(800, Math.round(state.budget * 0.18))];
+    passes.forEach(function (slack) {
+      state.plan.days.forEach(function (day, dayIdx) {
+        daySlots(dayIdx).forEach(function (slot) {
+          const m = mealInfo(day, slot);
+          if (!m || !dishHasProductName(m.dish, product)) return;
+          const pick = bestMealReplacement(dayIdx, slot, { excludeName: product, slack: slack });
+          if (pick) {
+            setPlanMeal(dayIdx, slot, pick.dish);
+            changed++;
+          }
+        });
+      });
+    });
+    if (!changed) {
+      const exists = state.plan.days.some(function (day, dayIdx) {
+        return daySlots(dayIdx).some(function (slot) {
+          const m = mealInfo(day, slot);
+          return !!m && dishHasProductName(m.dish, product);
+        });
+      });
+      return {
+        ok: false,
+        text: exists
+          ? 'Блюда с «' + product + '» есть, но замены не влезают в бюджет. Подними бюджет или убери другой продукт.'
+          : 'В плане нет блюд с «' + product + '».'
+      };
+    }
+    const guard = ensureCurrentPlanBudget(product);
+    let left = 0;
+    state.plan.days.forEach(function (day, dayIdx) {
+      daySlots(dayIdx).forEach(function (slot) {
+        const m = mealInfo(day, slot);
+        if (m && dishHasProductName(m.dish, product)) left++;
+      });
+    });
+    saveState();
+    render();
+    const parts = ['Убрал «' + product + '»: заменил ' + changed + ' ' + pluralize(changed, ['блюдо', 'блюда', 'блюд']) + '.'];
+    if (left) parts.push('Ещё ' + left + ' ' + pluralize(left, ['блюдо', 'блюда', 'блюд']) + ' с этим продуктом осталось — не нашлось замены в бюджете.');
+    parts.push(budgetSentence(planMetrics(), guard && guard.raised));
+    return { ok: true, text: parts.join('\n'), changed: changed };
+  }
+
+  if (type === 'fix') {
+    const guard = ensureCurrentPlanBudget();
+    saveState();
+    render();
+    return {
+      ok: true,
+      changed: guard ? guard.changed : 0,
+      text: (guard && guard.changed
+        ? 'Подогнал ' + guard.changed + ' ' + pluralize(guard.changed, ['блюдо', 'блюда', 'блюд']) + ' под бюджет.\n'
+        : 'Проверил закупку: всё укладывается в бюджет.\n') +
+        budgetSentence(planMetrics(), guard && guard.raised)
+    };
+  }
+
+  const goals = { protein: 'protein', cheap: 'cheap', fish: 'fish', veg: 'veg', light: 'light', variety: 'variety' };
+  const goal = goals[type];
+  if (!goal) return { ok: false, text: 'Не понял команду. Скажи: больше белка, дешевле, добавь рыбу, больше овощей, сделай легче, разнообразнее или замени ужин.' };
+
+  if (goal === 'light') {
+    const beforePlan = state.plan;
+    const beforeBudget = state.budget;
+    const before = planMetrics(beforePlan);
+    state.plan = JSON.parse(JSON.stringify(beforePlan));
+    state.plan.goal = 'light';
+    const target = Math.round(before.macros.kcal * 0.88);
+    reducePlanCalories(target);
+    const guard = ensureCurrentPlanBudget();
+    const after = planMetrics();
+    if (after.macros.kcal >= before.macros.kcal) {
+      state.plan = beforePlan;
+      state.budget = beforeBudget;
+      saveState();
+      render();
+      return {
+        ok: true,
+        changed: 0,
+        text: 'Рацион уже достаточно лёгкий: ' + before.macros.kcal + ' ккал за неделю. ' +
+          'Замены в рамках бюджета не дадут заметного снижения — можно убрать перекусы или уменьшить порции.'
+      };
+    }
+    const changed = changedMealCount(beforePlan, state.plan);
+    saveState();
+    render();
+    return {
+      ok: true,
+      changed: changed,
+      text: 'Сделал легче: ' + before.macros.kcal + ' → ' + after.macros.kcal + ' ккал за неделю.\n' +
+        'Изменил ' + changed + ' ' + pluralize(changed, ['блюдо', 'блюда', 'блюд']) + '.\n' +
+        budgetSentence(after, guard && guard.raised)
+    };
+  }
+
+  const res = regenerateForGoal(goal, 2);
+  if (!res) return { ok: false, text: 'Не получилось пересобрать рацион под текущие фильтры.' };
+
+  if (goal === 'cheap') {
+    const target = Math.max(CONFIG.minBudget, Math.round(res.before.shopping * 0.9 / 100) * 100);
+    const fit = fitPlanBudget(state.plan, target, 'cheap');
+    const afterShop = shoppingInfoFor(state.plan).total;
+    state.plan.budgetInfo = {
+      shopping: afterShop,
+      limit: state.budget,
+      raised: null,
+      changed: fit.changed,
+      usedCheapest: fit.usedCheapest
+    };
+    saveState();
+    const afterCheap = planMetrics();
+    res.after = afterCheap;
+    res.changed = changedMealCount(res.beforePlan, state.plan);
+    res.raised = null;
+  }
+  render();
+
+  const before = res.before;
+  const after = res.after;
+  const parts = [];
+  if (goal === 'protein') {
+    parts.push('Пересобрал рацион с упором на белок: ' + before.macros.p + ' → ' + after.macros.p + ' г белка за неделю.');
+  } else if (goal === 'cheap') {
+    const save = before.shopping - after.shopping;
+    parts.push('Сделал дешевле: закупка ' + fmtMoney(before.shopping) + ' → ' + fmtMoney(after.shopping) +
+      (save > 0 ? ' (экономия ' + fmtMoney(save) + ').' : '.'));
+  } else if (goal === 'fish') {
+    parts.push('Добавил рыбу: блюд с рыбой ' + before.fish + ' → ' + after.fish + '.');
+  } else if (goal === 'veg') {
+    parts.push('Добавил овощей: ' + before.veg + ' → ' + after.veg + ' г овощей в неделю.');
+  } else if (goal === 'light') {
+    parts.push('Сделал легче: ' + before.macros.kcal + ' → ' + after.macros.kcal + ' ккал за неделю.');
+  } else if (goal === 'variety') {
+    parts.push('Обновил меню для разнообразия: уникальных блюд ' + before.unique + ' → ' + after.unique + '.');
+  }
+  parts.push('Изменил ' + res.changed + ' ' + pluralize(res.changed, ['блюдо', 'блюда', 'блюд']) + '.');
+  parts.push(budgetSentence(after, res.raised || (state.plan.budgetInfo && state.plan.budgetInfo.raised)));
+  return { ok: true, text: parts.join('\n'), changed: res.changed };
 }
 
 function applyAIAction(action) {
@@ -3186,18 +3972,26 @@ function applyAIAction(action) {
       let target = null;
       if (action.dishId) {
         target = pool.find(function (d) { return d.id === action.dishId; });
-      } else if (action.reason) {
-        // Простой подбор по причине: берём первого подходящего из пула
-        target = pool[0];
+        if (!target || target.id === current.dish.id) return false;
+        const cs = budgetCostState(state.plan);
+        const trial = costStateTrial(cs, dishContribution(current.dish, current.k), dishContribution(target, current.k));
+        if (trial > state.budget + 0.5) {
+          toast('Это блюдо выведет закупку за бюджет — оставил текущее');
+          return false;
+        }
+      } else {
+        const pick = bestMealReplacement(dayIdx, slot, {});
+        target = pick ? pick.dish : null;
       }
       if (!target || target.id === current.dish.id) return false;
       state.plan.days[dayIdx].meals[slot] = { dishId: target.id, family: current.family };
       state.plan.createdAt = Date.now();
       state.plan.partial = state.plan.days.some(function (d) { return d.skipped && d.skipped.length; });
+      const guard = ensureCurrentPlanBudget();
       saveState();
       recordReplacement();
       render();
-      toast('Блюдо заменено: ' + target.name);
+      toast('Блюдо заменено: ' + target.name + (guard && guard.raised ? ' · бюджет поднят до ' + fmtMoney(guard.raised.to) : ''));
       return true;
     }
     if (a === 'regenerate_day') {
@@ -3205,8 +3999,8 @@ function applyAIAction(action) {
       if (!state.plan) return false;
       const slots = daySlots(dayIdx);
       if (!slots.length) return false;
-      // Сброс приёмов дня и перегенерация только этого дня через generatePlan (перегенератит всю неделю)
-      const ok = generatePlan();
+      // Пересобираем неделю с той же целью и сразу чиним бюджет.
+      const ok = generatePlan({ goal: state.plan.goal || 'balanced' });
       if (!ok) return false;
       state.plan.createdAt = Date.now();
       saveState();
@@ -3216,15 +4010,16 @@ function applyAIAction(action) {
     }
     if (a === 'adjust_budget') {
       if (action.budget !== undefined) {
-        state.budget = clamp(parseInt(action.budget, 10) || state.budget, CONFIG.minBudget, CONFIG.maxBudget);
+        state.budget = clamp(parseInt(action.budget, 10) || state.budget, CONFIG.minBudget, CONFIG.budgetCeiling);
       } else if (action.direction === 'down') {
         state.budget = Math.max(CONFIG.minBudget, state.budget - 1000);
       } else if (action.direction === 'up') {
-        state.budget = Math.min(CONFIG.maxBudget, state.budget + 1000);
+        state.budget = Math.min(CONFIG.budgetCeiling, state.budget + 1000);
       }
+      const guard = ensureCurrentPlanBudget();
       saveState();
       render();
-      toast('Бюджет обновлён: ' + fmtMoney(state.budget));
+      toast('Бюджет обновлён: ' + fmtMoney(state.budget) + (guard && guard.raised ? ' · минимальная закупка ' + fmtMoney(guard.raised.minimum) : ''));
       return true;
     }
     if (a === 'toggle_meal') {
@@ -3241,9 +4036,10 @@ function applyAIAction(action) {
         day[slot].self = on;
         if (on) day[slot].family = false;
       }
+      const guard = ensureCurrentPlanBudget();
       saveState();
       render();
-      toast('Приём пищи обновлён');
+      toast('Приём пищи обновлён' + (guard && guard.raised ? ' · бюджет поднят до ' + fmtMoney(guard.raised.to) : ''));
       return true;
     }
     if (a === 'add_stop') {
@@ -3401,6 +4197,9 @@ function renderRecipeEdit() {
 window.__legkostAI = {
   getContext: buildAIContext,
   applyAction: applyAIAction,
+  applyCommand: runAIPlanCommand,
+  ensureBudget: ensureCurrentPlanBudget,
+  getMetrics: planMetrics,
   isAvailable: function () { return !!state.plan; },
   getModel: function () {
     if (typeof AI === 'undefined') return 'qwen2.5:3b';
@@ -3440,6 +4239,7 @@ async function init() {
         currentProfile = profile;
         state = loadStateFor(user.id);
         state.ui.screen = state.plan ? 'week' : 'onboarding';
+        if (state.plan) ensureCurrentPlanBudget();
         saveState();
         render();
         return;
@@ -3453,6 +4253,8 @@ async function init() {
     if (localStorage.getItem(GUEST_KEY) === '1') {
       state = loadStateFor(null);
       state.ui.screen = state.plan ? 'week' : 'onboarding';
+      if (state.plan) ensureCurrentPlanBudget();
+      saveState();
       render();
       return;
     }

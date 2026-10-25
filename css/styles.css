@@ -1664,6 +1664,11 @@ input[type="range"]::-moz-range-thumb {
   #ai-root { left: 16px; right: 16px; align-items: flex-end; }
 }
 
+/* На широком экране панель стоит вплотную к карточке приложения, а не в углу монитора */
+@media (min-width: 1240px) {
+  #ai-root { left: calc(50% + 256px); right: auto; bottom: 32px; align-items: flex-start; }
+}
+
 .week-today-btn { font-size: 12px; font-weight: 800; color: var(--accent); background: var(--accent-soft); border: 1.5px solid var(--line); border-radius: 14px; padding: 6px 12px; cursor: pointer; margin-left: 8px; white-space: nowrap; }
 .week-today-btn:active { background: #F5DBC9; }
 

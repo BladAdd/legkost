@@ -295,15 +295,9 @@ async function startTunnel() {
 
 function scheduleTunnelRestart(delay) {
   if (stopping || restartTimer) return;
-  restartTimer = setTimeout(async () => {
+  restartTimer = setTimeout(() => {
     restartTimer = null;
-    try {
-      const data = await startTunnel();
-      publishPublic(data);
-    } catch (e) {
-      fail(String(e.message || e));
-      scheduleTunnelRestart(30000);
-    }
+    restartTunnel();
   }, delay || 5000);
 }
 

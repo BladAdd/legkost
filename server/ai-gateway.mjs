@@ -4,7 +4,7 @@
      OLLAMA_URL        — адрес Ollama (по умолчанию http://127.0.0.1:11434)
      PORT              — порт шлюза (по умолчанию 3001)
      ALLOW_ORIGIN      — разрешённый Origin (по умолчанию https://bladadd.github.io)
-     AI_MODEL          — модель по умолчанию (по умолчанию qwen3:4b)
+     AI_MODEL          — модель по умолчанию (по умолчанию qwen2.5:3b)
      AI_RATE_LIMIT_SEC — пауза между запросами одного IP (сек, по умолчанию 2)
      AI_MAX_PER_MIN    — максимум запросов в минуту с одного IP (по умолчанию 15)
      AI_KEY            — опциональный секретный ключ (заголовок X-AI-Key)
@@ -14,7 +14,8 @@ import http from 'http';
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
 const PORT = Number(process.env.PORT) || 3001;
 const ALLOW_ORIGIN = process.env.ALLOW_ORIGIN || 'https://bladadd.github.io';
-const DEFAULT_MODEL = process.env.AI_MODEL || 'qwen3:4b';
+const ALLOW_ORIGINS = ALLOW_ORIGIN.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+const DEFAULT_MODEL = process.env.AI_MODEL || 'qwen2.5:3b';
 const RATE_SEC = Number(process.env.AI_RATE_LIMIT_SEC) || 2;
 const MAX_PER_MIN = Number(process.env.AI_MAX_PER_MIN) || 15;
 const AI_KEY = process.env.AI_KEY || '';
@@ -22,13 +23,18 @@ const AI_KEY = process.env.AI_KEY || '';
 const lastRequest = new Map(); // ip -> timestamp
 const minuteHits = new Map();  // ip -> { count, resetAt }
 
+function corsFor(res) {
+  return res.__cors || ALLOW_ORIGINS[0];
+}
+
 function json(res, code, body) {
   const payload = JSON.stringify(body);
   res.writeHead(code, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': ALLOW_ORIGIN,
+    'Access-Control-Allow-Origin': corsFor(res),
     'Access-Control-Allow-Headers': 'Content-Type, X-AI-Key',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Vary': 'Origin',
     'Content-Length': String(Buffer.byteLength(payload))
   });
   res.end(payload);
@@ -36,10 +42,11 @@ function json(res, code, body) {
 
 function options(res) {
   res.writeHead(204, {
-    'Access-Control-Allow-Origin': ALLOW_ORIGIN,
+    'Access-Control-Allow-Origin': corsFor(res),
     'Access-Control-Allow-Headers': 'Content-Type, X-AI-Key',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Max-Age': '86400'
+    'Access-Control-Max-Age': '86400',
+    'Vary': 'Origin'
   });
   res.end();
 }
@@ -90,6 +97,8 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const { pathname } = url;
   const ip = clientIp(req);
+  const origin = req.headers.origin || '';
+  res.__cors = ALLOW_ORIGINS.indexOf('*') !== -1 ? '*' : (ALLOW_ORIGINS.indexOf(origin) !== -1 ? origin : ALLOW_ORIGINS[0]);
 
   if (req.method === 'OPTIONS') { options(res); return; }
 
@@ -131,14 +140,23 @@ const server = http.createServer(async (req, res) => {
           model,
           messages,
           stream: false,
+          think: false,
           options: {
             temperature,
-            num_ctx: 8192,
-            num_predict: 700,
-            think: false
+            num_ctx: 4096,
+            num_predict: 700
           }
         });
-        const content = data.message && data.message.content ? data.message.content : '';
+        const content = ((data.message && data.message.content) || '').trim();
+        if (!content) {
+          json(res, 200, {
+            ok: true,
+            content: 'Модель не успела ответить (ответ обрезан). Попробуй переформулировать вопрос короче или повторить.',
+            model,
+            doneReason: data.done_reason || ''
+          });
+          return;
+        }
         json(res, 200, { ok: true, content, model });
       } catch (e) {
         json(res, 502, { ok: false, error: String(e.message || e) });
@@ -154,7 +172,7 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('AI-шлюз: http://0.0.0.0:' + PORT);
   console.log('Ollama: ' + OLLAMA_URL);
   console.log('Модель: ' + DEFAULT_MODEL);
-  console.log('Разрешённый Origin: ' + ALLOW_ORIGIN);
+  console.log('Разрешённые Origin: ' + ALLOW_ORIGINS.join(', '));
   console.log('Rate limit: ' + MAX_PER_MIN + ' в мин, пауза ' + RATE_SEC + ' сек');
   if (AI_KEY) console.log('Защита: X-AI-Key включена');
 });

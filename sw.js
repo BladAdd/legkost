@@ -2,7 +2,7 @@
    Работает и в корне, и в подпапке (GitHub Pages /legkost/), потому что все пути относительные.
    Стратегия: оболочка — network-first с офлайн-фолбэком, картинки — cache-first.
 */
-const CACHE = 'legkost-v2';
+const CACHE = 'legkost-v3';
 
 const ASSETS = [
   './',
@@ -62,25 +62,28 @@ self.addEventListener('fetch', function (e) {
   if (url.pathname.indexOf('/api/') !== -1) return;                // API всегда по сети
   if (url.pathname.endsWith('prices-orsk.json')) return;           // цены всегда свежие
 
-  // Навигация: сеть, при офлайне — кэшированная оболочка
-  if (req.mode === 'navigate') {
+  // Код и стили: сначала сеть (чтобы обновления доходили), при офлайне — кэш
+  const isCode = /\.(?:js|css|webmanifest)$/.test(url.pathname) || req.mode === 'navigate';
+  if (isCode) {
     e.respondWith(
       fetch(req)
         .then(function (resp) {
-          const copy = resp.clone();
-          caches.open(CACHE).then(function (c) { c.put(req, copy); }).catch(function () { });
+          if (resp && resp.ok) {
+            const copy = resp.clone();
+            caches.open(CACHE).then(function (c) { c.put(req, copy); }).catch(function () { });
+          }
           return resp;
         })
         .catch(function () {
           return caches.match(req).then(function (hit) {
-            return hit || caches.match('./index.html') || caches.match('./');
+            return hit || (req.mode === 'navigate' ? caches.match('./index.html') : undefined);
           });
         })
     );
     return;
   }
 
-  // Картинки и статика: сначала кэш, потом сеть
+  // Картинки и остальная статика: сначала кэш, потом сеть
   e.respondWith(
     caches.match(req).then(function (hit) {
       if (hit) return hit;

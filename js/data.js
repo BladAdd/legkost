@@ -300,7 +300,7 @@ const PACKS = {
   lemon: { qty: 0.5, unit: 'кг', desc: 'сетка 500 г' },
   tomato: { qty: 0.5, unit: 'кг', desc: 'упаковка 500 г' },
   cucumber: { qty: 0.5, unit: 'кг', desc: 'упаковка 500 г' },
-  pepper: { qty: 4, unit: 'шт', desc: 'упаковка 4 шт' },
+  pepper: { qty: 0.5, unit: 'кг', desc: 'упаковка 500 г' },
   broccoli: { qty: 0.5, unit: 'кг', desc: 'упаковка 500 г' },
   mushrooms: { qty: 0.4, unit: 'кг', desc: 'упаковка 400 г' },
   greens: { qty: 0.1, unit: 'кг', desc: 'пучок 100 г' },

@@ -1277,6 +1277,21 @@ function planInfo() {
   };
 }
 
+function packShort(pack) {
+  if (!pack) return '';
+  const kg = Number(pack.qty) || 0;
+  if (kg >= 1) return String(Math.round(kg * 100) / 100).replace('.', ',') + ' кг';
+  return Math.round(kg * 1000) + ' г';
+}
+
+function packLabel(pack, packs) {
+  if (!pack) return '';
+  if (pack.unit === 'шт' || pack.unit === 'pc') {
+    return (packs > 1 ? packs + ' уп × ' : 'уп. ') + Math.round(pack.qty) + ' шт';
+  }
+  return (packs > 1 ? packs + ' × ' : '') + packShort(pack);
+}
+
 function packsFor(id, qty) {
   const pack = PACKS[id];
   const ing = ING[id];
@@ -1287,7 +1302,7 @@ function packsFor(id, qty) {
     pack: pack,
     packs: packs,
     totalQty: packs * pack.qty,
-    packCost: Math.round(ingredientPrice(ing) * packs * pack.qty / (ing.unit === 'pc' ? 1 : 1000))
+    packCost: Math.round(ingredientPrice(ing) * packs * pack.qty)
   };
 }
 
@@ -1339,8 +1354,9 @@ function shoppingInfo() {
     return { key: g.key, title: g.title, items: list };
   }).filter(function (g) { return g.items.length > 0; });
   const total = items.reduce(function (s, it) { return s + (it.buy ? it.packCost || it.cost : 0); }, 0);
+  const gramsTotal = items.reduce(function (s, it) { return s + (it.buy ? it.cost : 0); }, 0);
   const checked = items.filter(function (it) { return state.shoppingChecked.indexOf(it.ing.id) !== -1; }).length;
-  return { items: items, groups: groups, total: total, count: items.length, checked: checked, pantrySize: pantry.size };
+  return { items: items, groups: groups, total: total, gramsTotal: Math.round(gramsTotal), count: items.length, checked: checked, pantrySize: pantry.size };
 }
 
 /* ───────── ОБЩИЕ HTML-БЛОКИ ───────── */
@@ -1954,6 +1970,9 @@ function renderWeek() {
   const budgetLine = info.under
     ? '<div class="budget-line ok">✅ Бюджет: ' + fmtMoney(state.budget) + ' · остаток ' + fmtMoney(state.budget - info.cost) + '</div>'
     : '<div class="budget-line over">⚠️ Превышение: ' + fmtMoney(info.over) + '</div>';
+  const purchaseLine = shop.total > info.cost * 1.05
+    ? '<div class="purchase-line">🛒 Закупка целыми упаковками ≈ ' + fmtMoney(shop.total) + '</div>'
+    : '';
   const region = getRegion();
   const regionThumb = region.photoThumb || 'assets/stores/orsk-thumb.jpg';
 
@@ -1997,6 +2016,7 @@ function renderWeek() {
     '<div class="summary-label">💰 Стоимость плана</div>' +
     '<div class="summary-days">' + peopleCount() + ' ' + pluralPeople(peopleCount()) + ' · <span class="nowrap">' + fmtMoney(info.perPerson) + ' ₽/чел.</span></div>' +
     budgetLine +
+    purchaseLine +
     '</div></div>' +
     macroProgressHTML(info.macros, info.macroTargets, 'Среднее БЖУ за день', 'на порцию · цель ' + info.macroTargets.kcal + ' ккал') +
     '<div class="days-list">' + dayCards + '</div>' +
@@ -2120,17 +2140,20 @@ function renderShopping() {
     const done = g.items.filter(function (it) { return state.shoppingChecked.indexOf(it.ing.id) !== -1; }).length;
     const rows = g.items.map(function (it) {
       const isChecked = state.shoppingChecked.indexOf(it.ing.id) !== -1;
-      const packText = it.pack && it.packs > 1 ? ' · ' + it.packs + ' уп × ' + it.pack.desc : (it.pack ? ' · ' + it.pack.desc : '');
+      const packText = it.pack ? ' · ' + packLabel(it.pack, it.packs) : '';
       const pantryHtml = it.buy
-        ? '<button type="button" class="pantry-chip' + (it.hasPantry ? ' pantry-on' : '') + '" data-action="pantry-toggle" data-id="' + it.ing.id + '" title="Уже есть дома">' + (it.hasPantry ? '✓ дома' : '+ дома') + '</button>'
+        ? '<span role="button" tabindex="-1" class="pantry-chip' + (it.hasPantry ? ' pantry-on' : '') + '" data-action="pantry-toggle" data-id="' + it.ing.id + '" title="Уже есть дома">' + (it.hasPantry ? '✓ дома' : '+ дома') + '</span>'
         : '<span class="pantry-chip pantry-on">дома</span>';
       const showPrice = it.buy ? (it.packCost || it.cost) : 0;
-      return '<button type="button" class="shop-row' + (isChecked ? ' checked' : '') + (it.hasPantry ? ' pantry-item' : '') + '" data-action="toggle-shop" data-id="' + it.ing.id + '" data-row="' + it.ing.id + '" aria-pressed="' + isChecked + '">' +
+      return '<div class="shop-row' + (isChecked ? ' checked' : '') + (it.hasPantry ? ' pantry-item' : '') + '" data-row="' + it.ing.id + '">' +
+        '<button type="button" class="shop-toggle" data-action="toggle-shop" data-id="' + it.ing.id + '" aria-pressed="' + isChecked + '">' +
         '<span class="check-circle">' + (isChecked ? '✓' : '') + '</span>' +
         '<span class="shop-emoji">' + it.ing.emoji + '</span>' +
-        '<span class="shop-main"><span class="shop-name">' + esc(it.ing.name) + '</span><span class="shop-qty">' + it.display + packText + '</span>' + pantryHtml + '</span>' +
+        '<span class="shop-main"><span class="shop-name">' + esc(it.ing.name) + '</span><span class="shop-qty">' + it.display + packText + '</span></span>' +
+        '</button>' +
+        pantryHtml +
         '<span class="shop-price">' + fmtMoney(showPrice) + '</span>' +
-        '</button>';
+        '</div>';
     }).join('');
     return '<div class="shop-group" data-group="' + g.key + '">' +
       '<div class="shop-cat"><span>' + g.title + '</span><span class="shop-cat-count" data-count="' + g.key + '">' + done + '/' + g.items.length + '</span></div>' +
@@ -2144,12 +2167,13 @@ function renderShopping() {
     '<div class="card shop-progress-card">' +
     '<div class="shop-progress-text"><div class="shop-progress-big" id="shop-progress-big">' + checked + ' из ' + total + '</div>' +
     '<p class="hint">Отмечай, что уже в корзине</p>' +
-    '<div class="shop-total">Итого ≈ ' + fmtMoney(shop.total) + '</div></div>' +
+    '<div class="shop-total">Итого ≈ ' + fmtMoney(shop.total) + '</div>' +
+    '<div class="shop-total-note">с учётом целых упаковок · по граммам ' + fmtMoney(shop.gramsTotal) + '</div></div>' +
     '<div id="shop-ring">' + ringSVG(ratio, Math.round(ratio * 100) + '%', 'готово', 88, '#2F9E63') + '</div>' +
     '</div>' +
     (store && store.deliveryUrl ? '<a class="btn btn-secondary shop-delivery-btn" href="' + esc(store.deliveryUrl) + '" target="_blank" rel="noopener">Открыть ' + esc(store.name) + ' ↗</a>' : '') +
     groups +
-    '<p class="week-footnote">Цена списка может отличаться от плана на пару процентов из-за округлений. Точную сумму и наличие проверяй в корзине доставки.</p>' +
+    '<p class="week-footnote">Сумма списка — с целыми упаковками, поэтому обычно выше плана: остатки продуктов останутся на следующие недели. Точную сумму и наличие проверяй в корзине доставки.</p>' +
     '</div></section>';
 }
 
@@ -2879,6 +2903,14 @@ function onClick(e) {
       if (typeof AI !== 'undefined' && prompt) AI.quick(prompt);
       break;
     }
+    case 'ai-mode': {
+      const mode = target.getAttribute('data-mode');
+      if (typeof AI !== 'undefined' && AI.setMode) AI.setMode(mode);
+      break;
+    }
+    case 'ai-clear':
+      if (typeof AI !== 'undefined' && AI.clear) AI.clear();
+      break;
     case 'ai-send': {
       const input = document.getElementById('ai-input');
       if (typeof AI !== 'undefined' && input && input.value.trim()) {
@@ -3067,12 +3099,43 @@ function buildAIContext() {
     };
   }).filter(Boolean);
   const dayCost = meals.reduce(function (s, m) { return s + m.cost; }, 0);
+  const week = info.days.map(function (d, i) {
+    if (!d) return { day: CONFIG.daysShort[i], cost: 0, kcal: 0, meals: [] };
+    return {
+      day: CONFIG.daysShort[i],
+      cost: d.cost,
+      kcal: Math.round(d.macros.kcal),
+      protein: Math.round(d.macros.p),
+      meals: d.meals.map(function (m) {
+        return { slot: CONFIG.meals[m.slot].lower, name: m.dish.name, cost: m.cost };
+      })
+    };
+  });
+  const proteinPool = dishCandidates('dinner').concat(dishCandidates('lunch'))
+    .filter(function (d, i, arr) { return arr.findIndex(function (x) { return x.id === d.id; }) === i; })
+    .map(function (d) {
+      const p = d.macros && d.macros.p ? d.macros.p : 0;
+      const c = dishCost(d, true);
+      return { id: d.id, name: d.name, protein: Math.round(p), cost: c, per100: c > 0 ? Math.round(p / c * 100) : 0 };
+    })
+    .sort(function (a, b) { return b.per100 - a.per100 || b.protein - a.protein; })
+    .slice(0, 6);
   return {
     dayIdx: dayIdx,
     weekday: dayName,
     daysShort: CONFIG.daysShort,
     meals: meals,
     dayCost: dayCost,
+    week: week,
+    proteinPool: proteinPool,
+    shop: {
+      count: shop.count,
+      total: shop.total,
+      gramsTotal: shop.gramsTotal,
+      items: shop.items.filter(function (it) { return it.buy; }).slice(0, 12).map(function (it) {
+        return { name: it.ing.name, qty: it.display, price: it.packCost || it.cost };
+      })
+    },
     macros: info ? info.macros : { kcal: 0, p: 0, f: 0, c: 0 },
     people: peopleCount(),
     budget: state.budget,

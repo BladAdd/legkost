@@ -4,6 +4,10 @@
 */
 'use strict';
 
+/* ВАЖНО: модуль обёрнут в IIFE, чтобы не перезаписывать глобальные
+   функции приложения (render, init, esc и т.д.). Наружу отдаём только AI. */
+(function () {
+
 const AI = {
   enabled: false,
   open: false,
@@ -246,14 +250,18 @@ function handleInput(e) {
 }
 
 function init() {
-  // Проверяем доступность шлюза один раз при старте
+  document.addEventListener('keydown', handleInput);
+  // Проверяем шлюз только если он явно настроен — иначе не шумим ошибками CORS
+  let configured = false;
+  try { configured = !!localStorage.getItem('legkost.ai.gateway'); } catch (e) {}
+  if (!configured) return;
   checkHealth().then(function (ok) {
     setStatus(ok, AI.model, ok ? '' : 'шлюз не отвечает');
   });
-  document.addEventListener('keydown', handleInput);
 }
 
 window.LegkostAI = AI;
+window.AI = AI;
 AI.init = init;
 AI.toggle = toggle;
 AI.close = close;
@@ -261,3 +269,5 @@ AI.send = sendMessage;
 AI.quick = quickSend;
 AI.render = render;
 AI.setStatus = setStatus;
+
+})();

@@ -2,7 +2,8 @@
   "name": "Лёгкость — рацион на неделю в Орске",
   "short_name": "Лёгкость",
   "description": "Семейный рацион с локальными ценами, контролем БЖУ и подробными рецептами. Работает офлайн.",
-  "start_url": "/",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#F4F0E9",
@@ -11,13 +12,13 @@
   "dir": "ltr",
   "icons": [
     {
-      "src": "assets/avatars/avatar-1.jpg",
+      "src": "assets/stores/orsk-thumb.jpg",
       "sizes": "192x192",
       "type": "image/jpeg",
-      "purpose": "any maskable"
+      "purpose": "any"
     },
     {
-      "src": "assets/avatars/avatar-1.jpg",
+      "src": "assets/stores/orsk.jpg",
       "sizes": "512x512",
       "type": "image/jpeg",
       "purpose": "any"
@@ -28,15 +29,13 @@
       "name": "Сегодня",
       "short_name": "Сегодня",
       "description": "Что приготовить сегодня",
-      "url": "/?screen=today",
-      "icons": [{ "src": "assets/avatars/avatar-1.jpg", "sizes": "192x192" }]
+      "url": "./?screen=today"
     },
     {
       "name": "Покупки",
       "short_name": "Покупки",
       "description": "Список покупок на неделю",
-      "url": "/?screen=shopping",
-      "icons": [{ "src": "assets/avatars/avatar-2.jpg", "sizes": "192x192" }]
+      "url": "./?screen=shopping"
     }
   ]
 }

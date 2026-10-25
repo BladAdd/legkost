@@ -7,7 +7,8 @@
   <meta name="description" content="Лёгкость — семейный рацион на неделю в Орске: магазины, доставка, локальные цены, БЖУ, подробные рецепты и список покупок.">
   <title>Лёгкость — рацион на неделю в Орске</title>
   <link rel="stylesheet" href="css/styles.css">
-  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="assets/food/dishes/b_avocado_egg.jpg">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Лёгкость">
@@ -24,8 +25,12 @@
   <script src="js/app.js"></script>
   <script src="js/assistant.js"></script>
   <script>
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').then(function () { }).catch(function () { });
+    if ('serviceWorker' in navigator && location.protocol.indexOf('http') === 0) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('sw.js').then(function (reg) {
+          if (reg && reg.update) reg.update();
+        }).catch(function () { });
+      });
     }
   </script>
 </body>

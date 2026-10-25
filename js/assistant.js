@@ -335,11 +335,12 @@ async function chatCloud(messages) {
   }
 }
 
-async function chatGateway(base, messages, model) {
+async function chatGateway(base, messages, model, plain) {
   const res = await fetch(String(base).replace(/\/$/, '') + '/api/ai/chat', {
     method: 'POST',
-    // text/plain — CORS-безопасный тип: браузер не делает preflight, а шлюз всё равно парсит JSON из тела
-    headers: gatewayHeaders(base, { 'Content-Type': 'text/plain;charset=UTF-8' }),
+    // для домашнего сервера text/plain — CORS-безопасный тип без preflight; шлюз парсит JSON из тела.
+    // сторонний шлюз получает привычный application/json
+    headers: gatewayHeaders(base, { 'Content-Type': plain ? 'text/plain;charset=UTF-8' : 'application/json' }),
     body: JSON.stringify({ messages: messages, model: model || undefined, temperature: 0.4, stream: false }),
     signal: AbortSignal.timeout(120000)
   });
@@ -351,14 +352,14 @@ async function chatGateway(base, messages, model) {
 }
 
 function chatServer(messages) {
-  return chatGateway(AI.server.url, messages, AI.server.model).then(function (r) {
+  return chatGateway(AI.server.url, messages, AI.server.model, true).then(function (r) {
     if (r.model) AI.server.model = r.model;
     return r.content;
   });
 }
 
 function chatCustom(messages) {
-  return chatGateway(AI.gateway, messages, AI.customModel).then(function (r) {
+  return chatGateway(AI.gateway, messages, AI.customModel, false).then(function (r) {
     if (r.model) AI.customModel = r.model;
     return r.content;
   });

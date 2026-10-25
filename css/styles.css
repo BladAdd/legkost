@@ -1666,7 +1666,8 @@ input[type="range"]::-moz-range-thumb {
 @keyframes aiBlink { 0%, 80%, 100% { opacity: 0.35; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
 
 @media (max-width: 480px) {
-  .ai-panel { width: calc(100vw - 32px); left: 16px; right: auto; bottom: 16px; }
+  /* на телефоне панель может занять почти весь экран, чтобы не обрезались быстрые действия */
+  .ai-panel { width: calc(100vw - 32px); left: 16px; right: auto; bottom: 16px; max-height: calc(100dvh - 24px); }
   #ai-root { left: 16px; right: 16px; align-items: flex-end; }
 }
 

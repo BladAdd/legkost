@@ -83,7 +83,7 @@ const CONFIG = {
     'assets/avatars/avatar-5.jpg',
     'assets/avatars/avatar-6.jpg'
   ],
-  screens: ['auth', 'register', 'login', 'onboarding', 'loading', 'dashboard', 'week', 'day', 'shopping', 'empty', 'profile', 'profile-edit', 'history', 'region', 'map']
+  screens: ['auth', 'register', 'login', 'onboarding', 'loading', 'dashboard', 'week', 'day', 'today', 'shopping', 'recipes', 'recipe-edit', 'empty', 'profile', 'profile-edit', 'history', 'region', 'map']
 };
 
 const STORAGE_KEY = 'legkost.state.v1';
@@ -188,8 +188,10 @@ function makeDefaultState() {
     allergies: ['none'],
     stop: [],
     appliances: CONFIG.defaultAppliances.slice(),
+    pantry: [],
     plan: null,
     shoppingChecked: [],
+    customRecipeDraft: null,
     ui: { screen: 'onboarding', dayId: 0, mealDay: 0, dishId: null, slot: null, mapBack: 'onboarding', profileBack: 'week', regionBack: 'onboarding' }
   };
 }
@@ -594,6 +596,8 @@ function finishAuth(user, profile, welcome) {
   try { localStorage.removeItem(GUEST_KEY); } catch (e) {}
   writeSession(user.id);
   state = loadStateFor(user.id);
+  CUSTOM_RECIPES.length = 0;
+  (loadCustomRecipes() || []).forEach(function (r) { CUSTOM_RECIPES.push(r); });
   if (state.plan) {
     state.ui.screen = 'week';
   } else {
@@ -1035,7 +1039,8 @@ function dishIsStopped(dish) {
 function dishCandidates(slot) {
   const tier = budgetTier();
   const allergies = realAllergies();
-  return DISHES.filter(function (dish) {
+  const allDishes = DISHES.concat(CUSTOM_RECIPES.filter(Boolean));
+  return allDishes.filter(function (dish) {
     if (dish.slot !== slot) return false;
     if (dish.tier > tier) return false;
     if (state.childrenAges.length && dish.spicy) return false;
@@ -1272,8 +1277,23 @@ function planInfo() {
   };
 }
 
+function packsFor(id, qty) {
+  const pack = PACKS[id];
+  const ing = ING[id];
+  if (!pack || !ing) return null;
+  const need = ing.unit === 'pc' ? qty : qty / 1000;
+  const packs = Math.max(1, Math.ceil(need / pack.qty));
+  return {
+    pack: pack,
+    packs: packs,
+    totalQty: packs * pack.qty,
+    packCost: Math.round(ingredientPrice(ing) * packs * pack.qty / (ing.unit === 'pc' ? 1 : 1000))
+  };
+}
+
 function shoppingInfo() {
   const map = {};
+  const pantry = new Set(state.pantry || []);
   if (!state.plan) return { items: [], groups: [], total: 0, count: 0, checked: 0 };
   state.plan.days.forEach(function (day, dayIndex) {
     daySlots(dayIndex).forEach(function (slot) {
@@ -1298,11 +1318,19 @@ function shoppingInfo() {
   });
   const items = Object.keys(map).map(function (id) {
     const e = map[id];
+    const hasPantry = pantry.has(id);
+    const packInfo = packsFor(id, e.ing.unit === 'pc' ? e.pieces : e.grams);
     return {
       ing: e.ing,
       qty: e.ing.unit === 'pc' ? e.pieces : e.grams,
       display: e.ing.unit === 'pc' ? Math.round(e.pieces) + ' шт' : fmtQty(e.grams),
-      cost: Math.round(e.cost)
+      cost: Math.round(e.cost),
+      pack: packInfo ? packInfo.pack : null,
+      packs: packInfo ? packInfo.packs : 0,
+      packTotal: packInfo ? packInfo.totalQty : 0,
+      packCost: packInfo ? packInfo.packCost : Math.round(e.cost),
+      hasPantry: hasPantry,
+      buy: !hasPantry
     };
   }).sort(function (a, b) { return a.ing.name.localeCompare(b.ing.name, 'ru'); });
 
@@ -1310,9 +1338,9 @@ function shoppingInfo() {
     const list = items.filter(function (it) { return g.cats.indexOf(it.ing.category) !== -1; });
     return { key: g.key, title: g.title, items: list };
   }).filter(function (g) { return g.items.length > 0; });
-  const total = items.reduce(function (s, it) { return s + it.cost; }, 0);
+  const total = items.reduce(function (s, it) { return s + (it.buy ? it.packCost || it.cost : 0); }, 0);
   const checked = items.filter(function (it) { return state.shoppingChecked.indexOf(it.ing.id) !== -1; }).length;
-  return { items: items, groups: groups, total: total, count: items.length, checked: checked };
+  return { items: items, groups: groups, total: total, count: items.length, checked: checked, pantrySize: pantry.size };
 }
 
 /* ───────── ОБЩИЕ HTML-БЛОКИ ───────── */
@@ -1492,6 +1520,7 @@ function renderProfile() {
     '<div class="stat-tile"><b>' + ((currentProfile && currentProfile.replacedCount) || 0) + '</b><span>' + pluralize((currentProfile && currentProfile.replacedCount) || 0, ['замена', 'замены', 'замен']) + '</span></div>' +
     '<div class="stat-tile"><b>' + days + '</b><span>' + pluralize(days, ['день', 'дня', 'дней']) + '</span></div>' +
     '</div>' +
+    '<div class="profile-actions"><button type="button" class="setting-row" data-action="open-recipes"><span class="setting-icon">📝</span><span class="setting-main"><span class="setting-label">Мои рецепты</span><span class="setting-value">' + (loadCustomRecipes ? loadCustomRecipes().length : 0) + ' своих блюд</span></span><span class="setting-arrow">›</span></button></div>' +
     '<div class="profile-section"><div class="section-title">Настройки рациона</div><div class="settings-card">' +
     '<button type="button" class="setting-row" data-action="open-region" data-from="profile"><span class="setting-icon">📍</span><span class="setting-main"><span class="setting-label">Регион</span><span class="setting-value">' + esc(region.name) + ' · ' + availableStores().length + ' магазинов</span></span><span class="setting-arrow">›</span></button>' +
     '<button type="button" class="setting-row" data-action="edit-step" data-step="1"><span class="setting-icon">🛒</span><span class="setting-main"><span class="setting-label">Магазин</span><span class="setting-value">' + (store ? esc(store.name) : 'Не выбран') + '</span></span><span class="setting-arrow">›</span></button>' +
@@ -1954,6 +1983,7 @@ function renderWeek() {
     (store && store.delivery ? '<span class="week-place-delivery">' + (store.delivery.service === 'Самовывоз' ? '🚶 ' : '🛵 ') + esc(store.delivery.service) + (store.delivery.eta !== store.delivery.service ? ' · ' + esc(store.delivery.eta) : '') + '</span>' : '') +
     '</span><span class="week-place-arrow">Карта ›</span></button>' +
     (priceSnapshotForRegion() ? '<p class="week-price-note">Цены: ' + esc(priceSnapshotForRegion().source) + ' · ' + esc(priceSnapshotForRegion().dateLabel) + '</p>' : '') +
+    '<button type="button" class="week-today-btn" data-action="open-today">Сегодня</button>' +
     '<button type="button" class="shop-hero" data-action="open-shopping">' +
     '<span class="shop-hero-top"><span>🛒 ' + shop.count + ' ' + pluralPositions(shop.count) + '</span></span>' +
     '<span class="shop-hero-title">Открыть список покупок <span class="title-arrow">›</span></span>' +
@@ -2013,6 +2043,59 @@ function renderDay() {
     '</div></section>';
 }
 
+/* ───────── ЭКРАН «СЕГОДНЯ» ───────── */
+function renderToday() {
+  const idx = todayIndex();
+  const d = dayInfo(idx);
+  const slots = d ? d.meals : [];
+  const todayName = CONFIG.days[idx];
+  const todayShort = CONFIG.daysShort[idx];
+
+  if (!d || !slots.length) {
+    return '<section class="screen today-screen"><div class="screen-body">' +
+      '<div class="day-head">' + backButton('back') + '</div>' +
+      '<header class="page-head"><h1>' + todayName + '</h1></header>' +
+      '<div class="card empty-day-card"><span>🌿</span><b>Сегодня готовить не нужно</b><p>В этот день приёмы пищи выключены. Загляни в другой день или измени настройки.</p><button type="button" class="inline-link" data-action="edit-step" data-step="3">Настроить дни</button></div>' +
+      '</div></section>';
+  }
+
+  const mealCards = slots.map(function (m) {
+    const isLast = slots.indexOf(m) === slots.length - 1;
+    return '<div class="today-meal">' +
+      '<button type="button" class="today-dish" data-action="open-recipe" data-day="' + idx + '" data-slot="' + m.slot + '">' +
+      '<img class="today-dish-img" src="' + esc(m.dish.image) + '" alt="">' +
+      '<div class="today-dish-info"><span class="today-dish-slot">' + CONFIG.meals[m.slot].name + '</span><span class="today-dish-name">' + esc(m.dish.name) + '</span>' +
+      '<span class="today-dish-meta">🕐 ' + m.dish.timeMin + ' мин · ' + m.portions + ' ' + pluralPortions(m.portions) + '</span></div>' +
+      '<span class="today-dish-price">' + fmtMoney(m.cost) + ' ₽</span>' +
+      '</button>' +
+      (isLast ? '<button type="button" class="btn btn-primary today-cook" data-action="start-cooking">Приготовить ' + esc(m.dish.name) + '</button>' : '') +
+      '</div>';
+  }).join('');
+
+  const shop = shoppingInfo();
+  const unchecked = shop.items.filter(function (it) { return state.shoppingChecked.indexOf(it.ing.id) === -1; });
+
+  return '<section class="screen today-screen"><div class="screen-body">' +
+    '<div class="day-head">' + backButton('back') + '</div>' +
+    '<header class="page-head"><h1>' + todayName + ' · ' + todayShort + '</h1></header>' +
+    '<div class="card today-header-card">' +
+    '<div class="today-total">День: ' + fmtMoney(d.cost) + '</div>' +
+    '<div class="today-per-person">' + d.perPortion + ' ₽/порция · ' + slots.length + ' приём' + (slots.length === 1 ? 'а' : 'ов') + '</div>' +
+    '<div class="today-todo">' + unchecked.length + ' позиц. в покупках</div>' +
+    '</div>' +
+    macroProgressHTML(d.macros, d.macroTargets, 'БЖУ сегодня', 'на порцию · цель ' + Math.round(d.macroTargets.kcal) + ' ккал') +
+    '<div class="today-meals-list">' + mealCards + '</div>' +
+    (unchecked.length > 0 ? '<div class="card shop-quick-card"><div class="shop-quick-head">🛒 По пути в магазин</div>' +
+    unchecked.slice(0, 6).map(function (it) {
+      return '<button type="button" class="shop-quick-row" data-action="toggle-shop" data-id="' + it.ing.id + '">' +
+        '<span class="shop-emoji">' + it.ing.emoji + '</span><span>' + esc(it.ing.name) + '</span><span>' + fmtMoney(it.packCost || it.cost) + '</span>' +
+        '</button>';
+    }).join('') +
+    '<button type="button" class="btn btn-ghost" data-action="open-shopping">Весь список ›</button>' +
+    '</div>' : '') +
+    '</div></section>';
+}
+
 /* ───────── СПИСОК ПОКУПОК ───────── */
 function renderShopping() {
   const shop = shoppingInfo();
@@ -2036,11 +2119,16 @@ function renderShopping() {
     const done = g.items.filter(function (it) { return state.shoppingChecked.indexOf(it.ing.id) !== -1; }).length;
     const rows = g.items.map(function (it) {
       const isChecked = state.shoppingChecked.indexOf(it.ing.id) !== -1;
-      return '<button type="button" class="shop-row' + (isChecked ? ' checked' : '') + '" data-action="toggle-shop" data-id="' + it.ing.id + '" data-row="' + it.ing.id + '" aria-pressed="' + isChecked + '">' +
+      const packText = it.pack && it.packs > 1 ? ' · ' + it.packs + ' уп × ' + it.pack.desc : (it.pack ? ' · ' + it.pack.desc : '');
+      const pantryHtml = it.buy
+        ? '<button type="button" class="pantry-chip' + (it.hasPantry ? ' pantry-on' : '') + '" data-action="pantry-toggle" data-id="' + it.ing.id + '" title="Уже есть дома">' + (it.hasPantry ? '✓ дома' : '+ дома') + '</button>'
+        : '<span class="pantry-chip pantry-on">дома</span>';
+      const showPrice = it.buy ? (it.packCost || it.cost) : 0;
+      return '<button type="button" class="shop-row' + (isChecked ? ' checked' : '') + (it.hasPantry ? ' pantry-item' : '') + '" data-action="toggle-shop" data-id="' + it.ing.id + '" data-row="' + it.ing.id + '" aria-pressed="' + isChecked + '">' +
         '<span class="check-circle">' + (isChecked ? '✓' : '') + '</span>' +
         '<span class="shop-emoji">' + it.ing.emoji + '</span>' +
-        '<span class="shop-main"><span class="shop-name">' + esc(it.ing.name) + '</span><span class="shop-qty">' + it.display + '</span></span>' +
-        '<span class="shop-price">' + fmtMoney(it.cost) + '</span>' +
+        '<span class="shop-main"><span class="shop-name">' + esc(it.ing.name) + '</span><span class="shop-qty">' + it.display + packText + '</span>' + pantryHtml + '</span>' +
+        '<span class="shop-price">' + fmtMoney(showPrice) + '</span>' +
         '</button>';
     }).join('');
     return '<div class="shop-group" data-group="' + g.key + '">' +
@@ -2147,6 +2235,9 @@ function render() {
     case 'dashboard': html = renderDashboard(); break;
     case 'week': html = renderWeek(); break;
     case 'day': html = renderDay(); break;
+    case 'today': html = renderToday(); break;
+    case 'recipes': html = renderRecipes(); break;
+    case 'recipe-edit': html = renderRecipeEdit(); break;
     case 'shopping': html = renderShopping(); break;
     case 'empty': html = renderEmpty(); break;
     case 'profile': html = renderProfile(); break;
@@ -2164,6 +2255,8 @@ function render() {
   }
   document.getElementById('modal-root').innerHTML = renderRecipeModal();
   document.body.classList.toggle('modal-open', modalOpen);
+  const aiRoot = document.getElementById('ai-root');
+  if (aiRoot) aiRoot.innerHTML = typeof AI !== 'undefined' ? AI.render() : '';
 }
 
 function setScreen(name, options) {
@@ -2716,8 +2809,14 @@ function onClick(e) {
     case 'open-day':
       openDay(parseInt(target.getAttribute('data-day'), 10));
       break;
+    case 'open-today':
+      setScreen('today');
+      break;
     case 'open-shopping':
       setScreen('shopping');
+      break;
+    case 'start-cooking':
+      setScreen('day');
       break;
     case 'open-recipe':
       openRecipe(parseInt(target.getAttribute('data-day'), 10), target.getAttribute('data-slot'));
@@ -2757,6 +2856,138 @@ function onClick(e) {
     case 'back-to-setup':
       goStep(5);
       break;
+    case 'pantry-toggle': {
+      const id = target.getAttribute('data-id');
+      if (!id) break;
+      if (!state.pantry) state.pantry = [];
+      const pos = state.pantry.indexOf(id);
+      if (pos === -1) state.pantry.push(id);
+      else state.pantry.splice(pos, 1);
+      saveState();
+      render();
+      break;
+    }
+    case 'ai-toggle':
+      if (typeof AI !== 'undefined') AI.toggle();
+      break;
+    case 'ai-close':
+      if (typeof AI !== 'undefined') AI.close();
+      break;
+    case 'ai-quick': {
+      const prompt = target.getAttribute('data-prompt');
+      if (typeof AI !== 'undefined' && prompt) AI.quick(prompt);
+      break;
+    }
+    case 'ai-send': {
+      const input = document.getElementById('ai-input');
+      if (typeof AI !== 'undefined' && input && input.value.trim()) {
+        AI.send(input.value.trim());
+        input.value = '';
+      }
+      break;
+    }
+    case 'open-recipes':
+      state.ui.editRecipeId = null;
+      setScreen('recipes');
+      break;
+    case 'add-custom-recipe':
+      state.ui.editRecipeId = null;
+      state.customRecipeDraft = null;
+      setScreen('recipe-edit');
+      break;
+    case 'edit-custom-recipe': {
+      state.ui.editRecipeId = target.getAttribute('data-id');
+      setScreen('recipe-edit');
+      break;
+    }
+    case 'delete-custom-recipe': {
+      const id = target.getAttribute('data-id');
+      if (!id) break;
+      if (!window.confirm('Удалить рецепт?')) break;
+      deleteCustomRecipe(id);
+      if (state.ui.editRecipeId === id) state.ui.editRecipeId = null;
+      if (state.ui.screen === 'recipe-edit') setScreen('recipes');
+      else render();
+      toast('Рецепт удалён');
+      break;
+    }
+    case 'add-custom-ing': {
+      if (!state.customRecipeDraft) state.customRecipeDraft = { ingredients: [], steps: [] };
+      if (!state.customRecipeDraft.ingredients) state.customRecipeDraft.ingredients = [];
+      state.customRecipeDraft.ingredients.push({ name: '', qty: '', unit: 'kg' });
+      animateNext = false; saveState(); render();
+      break;
+    }
+    case 'remove-custom-ing': {
+      const i = parseInt(target.getAttribute('data-index'), 10);
+      if (!state.customRecipeDraft || !state.customRecipeDraft.ingredients) break;
+      state.customRecipeDraft.ingredients.splice(i, 1);
+      animateNext = false; saveState(); render();
+      break;
+    }
+    case 'add-custom-step': {
+      if (!state.customRecipeDraft) state.customRecipeDraft = { ingredients: [], steps: [] };
+      if (!state.customRecipeDraft.steps) state.customRecipeDraft.steps = [];
+      state.customRecipeDraft.steps.push('');
+      animateNext = false; saveState(); render();
+      break;
+    }
+    case 'save-custom-recipe': {
+      const nameEl = document.getElementById('recipe-name');
+      const emojiEl = document.getElementById('recipe-emoji');
+      const slotEl = document.getElementById('recipe-slot');
+      const timeEl = document.getElementById('recipe-time');
+      const kcalEl = document.getElementById('recipe-kcal');
+      const pEl = document.getElementById('recipe-p');
+      const fEl = document.getElementById('recipe-f');
+      const cEl = document.getElementById('recipe-c');
+      const name = String(nameEl ? nameEl.value : '').trim();
+      if (!name) { toast('Введи название блюда'); if (nameEl) nameEl.focus(); break; }
+      const recipe = {
+        name: name,
+        emoji: String(emojiEl ? emojiEl.value : '🍽️'),
+        slot: slotEl ? slotEl.value : 'lunch',
+        timeMin: clamp(parseInt(timeEl ? timeEl.value : '0', 10) || 0, 0, 300),
+        macros: {
+          kcal: Math.round(Number(kcalEl ? kcalEl.value : 0) || 0),
+          p: Math.round(Number(pEl ? pEl.value : 0) || 0),
+          f: Math.round(Number(fEl ? fEl.value : 0) || 0),
+          c: Math.round(Number(cEl ? cEl.value : 0) || 0)
+        },
+        ingredients: [],
+        steps: []
+      };
+      document.querySelectorAll('.custom-ing-row').forEach(function (row) {
+        const n = row.querySelector('.custom-ing-name');
+        const q = row.querySelector('.custom-ing-qty');
+        const u = row.querySelector('.custom-ing-unit');
+        if (n && n.value.trim()) {
+          recipe.ingredients.push({
+            name: n.value.trim(),
+            qty: Number(q ? q.value : 0) || 0,
+            unit: u ? u.value : 'kg'
+          });
+        }
+      });
+      document.querySelectorAll('.custom-step-row').forEach(function (row) {
+        const t = row.querySelector('.custom-step-text');
+        if (t && t.value.trim()) recipe.steps.push(t.value.trim());
+      });
+      if (recipe.ingredients.length === 0) { toast('Добавь хотя бы один ингредиент'); break; }
+      if (recipe.steps.length === 0) { toast('Добавь хотя бы один шаг'); break; }
+      const editingId = state.ui.editRecipeId;
+      if (editingId) {
+        updateCustomRecipe(editingId, recipe);
+        toast('Рецепт обновлён');
+      } else {
+        addCustomRecipe(recipe);
+        toast('Рецепт добавлен');
+      }
+      state.ui.editRecipeId = null;
+      state.customRecipeDraft = null;
+      setScreen('recipes');
+      break;
+    }
     default:
       break;
   }
@@ -2798,6 +3029,288 @@ function onKeydown(e) {
   }
 }
 
+/* ───────── ИИ-АССИСТЕНТ: МОСТ И КОНТЕКСТ ───────── */
+function buildAIContext() {
+  if (!state.plan) return null;
+  const info = planInfo();
+  const shop = shoppingInfo();
+  const region = getRegion();
+  const store = getStore();
+  const snap = priceSnapshotForRegion();
+  const dayIdx = clamp(parseInt(state.ui.dayId, 10) || 0, 0, 6);
+  const dayName = CONFIG.days[dayIdx];
+  const dayShort = CONFIG.daysShort[dayIdx];
+  const slots = daySlots(dayIdx);
+  const meals = slots.map(function (slot) {
+    const m = mealInfo(state.plan.days[dayIdx], slot);
+    if (!m) return null;
+    return {
+      slot: slot,
+      slotName: CONFIG.meals[slot].name,
+      dishName: m.dish.name,
+      time: m.dish.timeMin,
+      cost: m.cost,
+      perPortion: m.perPortion,
+      portions: m.portions,
+      family: !!m.family
+    };
+  }).filter(Boolean);
+  const dayCost = meals.reduce(function (s, m) { return s + m.cost; }, 0);
+  return {
+    dayIdx: dayIdx,
+    weekday: dayName,
+    daysShort: CONFIG.daysShort,
+    meals: meals,
+    dayCost: dayCost,
+    macros: info ? info.macros : { kcal: 0, p: 0, f: 0, c: 0 },
+    people: peopleCount(),
+    budget: state.budget,
+    cost: info ? info.cost : 0,
+    over: info ? info.over : 0,
+    under: info ? info.under : true,
+    store: store ? store.name : 'не выбран',
+    region: region ? region.name : 'Орск',
+    priceSource: snap ? (snap.source || 'снимок цен') : 'базовые цены',
+    allergies: realAllergies(),
+    stops: state.stop.slice()
+  };
+}
+
+function applyAIAction(action) {
+  if (!action || !action.action) return false;
+  const a = action.action;
+  const bridge = window.__legkostAI;
+
+  try {
+    if (a === 'replace_meal') {
+      const dayIdx = clamp(parseInt(action.day, 10) || 0, 0, 6);
+      const slot = action.slot;
+      if (!state.plan || !state.plan.days[dayIdx] || !slot) return false;
+      const current = mealInfo(state.plan.days[dayIdx], slot);
+      if (!current) return false;
+      const pool = dishCandidates(slot);
+      let target = null;
+      if (action.dishId) {
+        target = pool.find(function (d) { return d.id === action.dishId; });
+      } else if (action.reason) {
+        // Простой подбор по причине: берём первого подходящего из пула
+        target = pool[0];
+      }
+      if (!target || target.id === current.dish.id) return false;
+      state.plan.days[dayIdx].meals[slot] = { dishId: target.id, family: current.family };
+      state.plan.createdAt = Date.now();
+      state.plan.partial = state.plan.days.some(function (d) { return d.skipped && d.skipped.length; });
+      saveState();
+      recordReplacement();
+      render();
+      toast('Блюдо заменено: ' + target.name);
+      return true;
+    }
+    if (a === 'regenerate_day') {
+      const dayIdx = clamp(parseInt(action.day, 10) || 0, 0, 6);
+      if (!state.plan) return false;
+      const slots = daySlots(dayIdx);
+      if (!slots.length) return false;
+      // Сброс приёмов дня и перегенерация только этого дня через generatePlan (перегенератит всю неделю)
+      const ok = generatePlan();
+      if (!ok) return false;
+      state.plan.createdAt = Date.now();
+      saveState();
+      render();
+      toast('Рацион пересобран');
+      return true;
+    }
+    if (a === 'adjust_budget') {
+      if (action.budget !== undefined) {
+        state.budget = clamp(parseInt(action.budget, 10) || state.budget, CONFIG.minBudget, CONFIG.maxBudget);
+      } else if (action.direction === 'down') {
+        state.budget = Math.max(CONFIG.minBudget, state.budget - 1000);
+      } else if (action.direction === 'up') {
+        state.budget = Math.min(CONFIG.maxBudget, state.budget + 1000);
+      }
+      saveState();
+      render();
+      toast('Бюджет обновлён: ' + fmtMoney(state.budget));
+      return true;
+    }
+    if (a === 'toggle_meal') {
+      const dayIdx = clamp(parseInt(action.day, 10) || 0, 0, 6);
+      const slot = action.slot;
+      const kind = action.kind || 'family';
+      const on = action.on !== undefined ? action.on : true;
+      const day = state.dayMeals[dayIdx];
+      if (!day || !day[slot]) return false;
+      if (kind === 'family') {
+        day[slot].family = on;
+        if (on) day[slot].self = false;
+      } else {
+        day[slot].self = on;
+        if (on) day[slot].family = false;
+      }
+      saveState();
+      render();
+      toast('Приём пищи обновлён');
+      return true;
+    }
+    if (a === 'add_stop') {
+      const name = String(action.product || '').trim();
+      if (!name) return false;
+      if (state.stop.length >= 20) { toast('Достаточно 20 стоп-продуктов'); return false; }
+      if (state.stop.some(function (s) { return normalizeName(s) === normalizeName(name); })) return false;
+      state.stop.push(name);
+      saveState();
+      render();
+      toast('Добавлено в стоп-лист: ' + name);
+      return true;
+    }
+    if (a === 'get_recipe') {
+      const dayIdx = clamp(parseInt(action.day, 10) || 0, 0, 6);
+      const slot = action.slot;
+      if (!state.plan || !state.plan.days[dayIdx]) return false;
+      openRecipe(dayIdx, slot);
+      return true;
+    }
+    if (a === 'shopping_advice') {
+      setScreen('shopping');
+      toast('Открыт список покупок');
+      return true;
+    }
+    return false;
+  } catch (e) {
+    toast('Не удалось применить действие: ' + (e.message || e));
+    return false;
+  }
+}
+
+/* ───────── СВОИ РЕЦЕПТЫ ───────── */
+function loadCustomRecipes() {
+  if (!currentProfile) return [];
+  return currentProfile.customRecipes || [];
+}
+function saveCustomRecipes(recipes) {
+  if (!currentProfile) return Promise.resolve();
+  currentProfile.customRecipes = recipes;
+  return persistProfile();
+}
+function addCustomRecipe(recipe) {
+  if (!currentProfile) return false;
+  if (!currentProfile.customRecipes) currentProfile.customRecipes = [];
+  recipe.id = 'custom_' + Date.now();
+  recipe.createdAt = Date.now();
+  currentProfile.customRecipes.push(recipe);
+  CUSTOM_RECIPES.push(recipe);
+  persistProfile();
+  return true;
+}
+function updateCustomRecipe(id, fields) {
+  if (!currentProfile || !currentProfile.customRecipes) return false;
+  const idx = currentProfile.customRecipes.findIndex(function (r) { return r.id === id; });
+  if (idx === -1) return false;
+  Object.assign(currentProfile.customRecipes[idx], fields);
+  const cIdx = CUSTOM_RECIPES.findIndex(function (r) { return r.id === id; });
+  if (cIdx !== -1) Object.assign(CUSTOM_RECIPES[cIdx], fields);
+  persistProfile();
+  return true;
+}
+function deleteCustomRecipe(id) {
+  if (!currentProfile || !currentProfile.customRecipes) return false;
+  currentProfile.customRecipes = currentProfile.customRecipes.filter(function (r) { return r.id !== id; });
+  CUSTOM_RECIPES.splice(CUSTOM_RECIPES.findIndex(function (r) { return r.id === id; }), 1);
+  persistProfile();
+  return true;
+}
+
+/* ───────── ЭКРАН «МОИ РЕЦЕПТЫ» ───────── */
+function renderRecipes() {
+  const recipes = loadCustomRecipes();
+  if (!recipes.length) {
+    return '<section class="screen recipes-screen"><div class="screen-body">' +
+      '<div class="day-head">' + backButton('back') + '</div>' +
+      '<header class="page-head"><h1>Мои рецепты</h1></header>' +
+      '<div class="card empty-day-card"><span>📝</span><b>У вас пока нет своих рецептов</b><p>Добавьте первое блюдо — оно появится в генераторе наравне с встроенными.</p>' +
+      '<button type="button" class="btn btn-primary" data-action="add-custom-recipe">Добавить рецепт</button>' +
+      '</div></div></section>';
+  }
+  const list = recipes.map(function (r) {
+    return '<div class="recipe-list-item">' +
+      '<div class="recipe-list-main">' +
+      '<span class="recipe-list-emoji">' + esc(r.emoji || '🍽️') + '</span>' +
+      '<div><span class="recipe-list-name">' + esc(r.name) + '</span><span class="recipe-list-meta">⏱ ' + (r.timeMin || 0) + ' мин · ' + (r.slot || 'обед') + ' · ' + (r.macros ? Math.round(r.macros.kcal) + ' ккал' : '') + '</span></div>' +
+      '</div>' +
+      '<div class="recipe-list-actions">' +
+      '<button type="button" class="chip-action" data-action="edit-custom-recipe" data-id="' + esc(r.id) + '">Редактировать</button>' +
+      '<button type="button" class="chip-action ghost" data-action="delete-custom-recipe" data-id="' + esc(r.id) + '" style="color:var(--danger-text)">Удалить</button>' +
+      '</div>' +
+      '</div>';
+  }).join('');
+  return '<section class="screen recipes-screen"><div class="screen-body">' +
+    '<div class="day-head">' + backButton('back') + '</div>' +
+    '<header class="page-head"><h1>Мои рецепты</h1></header>' +
+    '<button type="button" class="btn btn-primary" data-action="add-custom-recipe">+ Новый рецепт</button>' +
+    '<div class="recipes-list">' + list + '</div>' +
+    '</div></section>';
+}
+
+/* ────────- ЭКРАН СОЗДАНИЯ/РЕДАКТИРОВАНИЯ РЕЦЕПТА ───────── */
+function renderRecipeEdit() {
+  const editing = state.ui.editRecipeId;
+  const recipe = editing ? loadCustomRecipes().find(function (r) { return r.id === editing; }) : null;
+  const isEdit = !!recipe;
+  const name = recipe ? esc(recipe.name) : '';
+  const time = recipe ? recipe.timeMin || 0 : 0;
+  const slot = recipe ? (recipe.slot || 'lunch') : 'lunch';
+  const emoji = recipe ? esc(recipe.emoji || '🍽️') : '🍽️';
+  const ings = (recipe && recipe.ingredients ? recipe.ingredients : []).map(function (it, i) {
+    return '<div class="custom-ing-row">' +
+      '<input type="text" class="custom-ing-name" value="' + esc(it.name || '') + '" placeholder="Ингредиент">' +
+      '<input type="number" class="custom-ing-qty" value="' + (it.qty || '') + '" placeholder="Кол-во">' +
+      '<select class="custom-ing-unit"><option value="kg">кг</option><option value="pc">шт</option></select>' +
+      '<button type="button" class="chip-action ghost" data-action="remove-custom-ing" data-index="' + i + '">×</button>' +
+      '</div>';
+  }).join('');
+  const steps = (recipe && recipe.steps ? recipe.steps : []).map(function (s, i) {
+    return '<div class="custom-step-row"><textarea class="custom-step-text" placeholder="Шаг приготовления">' + esc(s) + '</textarea></div>';
+  }).join('');
+  return '<section class="screen recipe-edit-screen"><div class="screen-body">' +
+    '<div class="day-head">' + backButton('back') + '</div>' +
+    '<header class="page-head"><h1>' + (isEdit ? 'Редактировать' : 'Новый рецепт') + '</h1></header>' +
+    '<div class="card">' +
+    '<div class="form-row"><label>Название блюда</label><input type="text" id="recipe-name" value="' + name + '" placeholder="Например: Ом appelés с сыром"></div>' +
+    '<div class="form-row"><label>Эмодзи</label><input type="text" id="recipe-emoji" value="' + emoji + '" maxlength="2" placeholder="🍳"></div>' +
+    '<div class="form-row"><label>Приём пищи</label><select id="recipe-slot">' +
+    '<option value="breakfast"' + (slot === 'breakfast' ? ' selected' : '') + '>Завтрак</option>' +
+    '<option value="lunch"' + (slot === 'lunch' ? ' selected' : '') + '>Обед</option>' +
+    '<option value="dinner"' + (slot === 'dinner' ? ' selected' : '') + '>Ужин</option>' +
+    '</select></div>' +
+    '<div class="form-row"><label>Время (мин)</label><input type="number" id="recipe-time" value="' + time + '" min="0"></div>' +
+    '<div class="form-row"><label>БЖУ (на порцию)</label>' +
+    '<input type="number" id="recipe-kcal" placeholder="ккал" value="' + (recipe ? recipe.macros ? recipe.macros.kcal : '' : '') + '">' +
+    '<input type="number" id="recipe-p" placeholder="Б" value="' + (recipe ? recipe.macros ? recipe.macros.p : '' : '') + '">' +
+    '<input type="number" id="recipe-f" placeholder="Ж" value="' + (recipe ? recipe.macros ? recipe.macros.f : '' : '') + '">' +
+    '<input type="number" id="recipe-c" placeholder="У" value="' + (recipe ? recipe.macros ? recipe.macros.c : '' : '') + '">' +
+    '</div>' +
+    '<div class="form-row"><label>Ингредиенты</label>' +
+    ings +
+    '<button type="button" class="btn btn-ghost" data-action="add-custom-ing">+ Ингредиент</button>' +
+    '</div>' +
+    '<div class="form-row"><label>Шаги приготовления</label>' +
+    steps +
+    '<button type="button" class="btn btn-ghost" data-action="add-custom-step">+ Шаг</button>' +
+    '</div>' +
+    '</div>' +
+    '<div class="cta-bar"><div class="cta-inner">' +
+    '<button type="button" class="btn btn-primary" data-action="save-custom-recipe">' + (isEdit ? 'Сохранить' : 'Добавить рецепт') + '</button>' +
+    (isEdit ? '<button type="button" class="btn btn-ghost" data-action="delete-custom-recipe" data-id="' + esc(editing) + '" style="color:var(--danger-text); background:var(--danger-soft)">Удалить рецепт</button>' : '') +
+    '</div></div>' +
+    '</div></section>';
+}
+window.__legkostAI = {
+  getContext: buildAIContext,
+  applyAction: applyAIAction,
+  isAvailable: function () { return !!state.plan; },
+  getModel: function () { return (typeof AI !== 'undefined' && AI.model) ? AI.model : 'qwen3:4b'; }
+};
+
 /* ───────── ИНИЦИАЛИЗАЦИЯ ───────── */
 async function init() {
   document.addEventListener('click', onClick);
@@ -2805,6 +3318,7 @@ async function init() {
   document.addEventListener('change', onInput);
   document.addEventListener('submit', onSubmit);
   document.addEventListener('keydown', onKeydown);
+  if (typeof AI !== 'undefined' && AI.init) AI.init();
   try {
     await openDB();
     await migrateFallbackToIndexedDB();

@@ -255,6 +255,63 @@ const INGREDIENTS = [
   { id: 'cocoa', name: 'Какао-порошок', emoji: '🍫', category: 'other', unit: 'kg', pricePerUnit: 790, allergens: [], syn: ['какао'] }
 ];
 
+/* Реальные упаковки магазина: в каком объёме продукт продаётся.
+   Используется в списке покупок — округляем до целых упаковок, а не граммов. */
+const PACKS = {
+  egg: { qty: 10, unit: 'шт', desc: 'упаковка 10 шт' },
+  milk: { qty: 0.92, unit: 'кг', desc: 'пакет 920 мл' },
+  kefir: { qty: 0.92, unit: 'кг', desc: 'пакет 920 мл' },
+  yogurt: { qty: 0.45, unit: 'кг', desc: 'стаканчик 450 г' },
+  cottage_cheese: { qty: 0.4, unit: 'кг', desc: 'упаковка 400 г' },
+  cheese: { qty: 0.2, unit: 'кг', desc: 'блок 200 г' },
+  butter: { qty: 0.2, unit: 'кг', desc: 'упаковка 200 г' },
+  sour_cream: { qty: 0.3, unit: 'кг', desc: 'стаканчик 300 г' },
+  cream: { qty: 0.3, unit: 'кг', desc: 'пакет 300 мл' },
+  bread: { qty: 0.4, unit: 'кг', desc: 'батон 400 г' },
+  lavash: { qty: 8, unit: 'шт', desc: 'упаковка 8 шт' },
+  rice: { qty: 0.9, unit: 'кг', desc: 'пакет 900 г' },
+  buckwheat: { qty: 0.9, unit: 'кг', desc: 'пакет 900 г' },
+  oatmeal: { qty: 0.8, unit: 'кг', desc: 'пакет 800 г' },
+  millet: { qty: 0.8, unit: 'кг', desc: 'пакет 800 г' },
+  oat_flour: { qty: 0.5, unit: 'кг', desc: 'пакет 500 г' },
+  flour: { qty: 1, unit: 'кг', desc: 'пакет 1 кг' },
+  pasta: { qty: 0.9, unit: 'кг', desc: 'пакет 900 г' },
+  pearl_barley: { qty: 0.8, unit: 'кг', desc: 'пакет 800 г' },
+  oil: { qty: 1, unit: 'кг', desc: 'бутылка 1 л' },
+  spices: { qty: 0.1, unit: 'кг', desc: 'банка 100 г' },
+  soy_sauce: { qty: 0.25, unit: 'кг', desc: 'бутылка 250 мл' },
+  honey: { qty: 0.5, unit: 'кг', desc: 'банка 500 г' },
+  sugar: { qty: 1, unit: 'кг', desc: 'пакет 1 кг' },
+  salt: { qty: 1, unit: 'кг', desc: 'пакет 1 кг' },
+  potato: { qty: 2, unit: 'кг', desc: 'мешок 2 кг' },
+  onion: { qty: 1, unit: 'кг', desc: 'сетка 1 кг' },
+  carrot: { qty: 1, unit: 'кг', desc: 'шт 1 кг' },
+  cabbage: { qty: 1, unit: 'кг', desc: 'кочан 1 кг' },
+  chicken_fillet: { qty: 1, unit: 'кг', desc: 'упаковка 1 кг' },
+  minced_chicken: { qty: 0.5, unit: 'кг', desc: 'упаковка 500 г' },
+  turkey: { qty: 0.7, unit: 'кг', desc: 'упаковка 700 г' },
+  salmon: { qty: 0.5, unit: 'кг', desc: 'филе 500 г' },
+  cod: { qty: 0.6, unit: 'кг', desc: 'тушка 600 г' },
+  pollock: { qty: 0.7, unit: 'кг', desc: 'тушка 700 г' },
+  shrimp: { qty: 0.5, unit: 'кг', desc: 'упаковка 500 г' },
+  banana: { qty: 1, unit: 'кг', desc: 'пучок 1 кг' },
+  apple: { qty: 1, unit: 'кг', desc: 'шт 1 кг' },
+  orange: { qty: 1, unit: 'кг', desc: 'шт 1 кг' },
+  lemon: { qty: 0.5, unit: 'кг', desc: 'сетка 500 г' },
+  tomato: { qty: 0.5, unit: 'кг', desc: 'упаковка 500 г' },
+  cucumber: { qty: 0.5, unit: 'кг', desc: 'упаковка 500 г' },
+  pepper: { qty: 4, unit: 'шт', desc: 'упаковка 4 шт' },
+  broccoli: { qty: 0.5, unit: 'кг', desc: 'упаковка 500 г' },
+  mushrooms: { qty: 0.4, unit: 'кг', desc: 'упаковка 400 г' },
+  greens: { qty: 0.1, unit: 'кг', desc: 'пучок 100 г' },
+  avocado: { qty: 4, unit: 'шт', desc: 'упаковка 4 шт' },
+  berries: { qty: 0.4, unit: 'кг', desc: 'пакет 400 г' }
+};
+
+/* Собственные рецепты пользователя — хранятся в IndexedDB/localStorage.
+   Кастомные блюда участвуют в генерации наравне с встроенными. */
+const CUSTOM_RECIPES = [];
+
 const DISHES = [
   /* ───── ЗАВТРАКИ ───── */
   {

@@ -32,7 +32,7 @@ function json(res, code, body) {
   res.writeHead(code, {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': corsFor(res),
-    'Access-Control-Allow-Headers': 'Content-Type, X-AI-Key',
+    'Access-Control-Allow-Headers': 'Content-Type, X-AI-Key, Bypass-Tunnel-Reminder',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Vary': 'Origin',
     'Content-Length': String(Buffer.byteLength(payload))
@@ -43,7 +43,7 @@ function json(res, code, body) {
 function options(res) {
   res.writeHead(204, {
     'Access-Control-Allow-Origin': corsFor(res),
-    'Access-Control-Allow-Headers': 'Content-Type, X-AI-Key',
+    'Access-Control-Allow-Headers': 'Content-Type, X-AI-Key, Bypass-Tunnel-Reminder',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Max-Age': '86400',
     'Vary': 'Origin'

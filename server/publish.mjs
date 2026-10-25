@@ -3,7 +3,7 @@
 
    Что делает:
    1. Поднимает шлюз к Ollama (server/ai-gateway.mjs), если он ещё не запущен.
-   2. Открывает публичный туннель Cloudflare и получает адрес https://….trycloudflare.com
+   2. Открывает публичный туннель localtunnel и получает адрес https://….loca.lt
    3. Проверяет, что сайт может достучаться до шлюза.
    4. Записывает адрес в ai-endpoint.json и пушит его в GitHub —
       GitHub Pages раздаёт файл всем посетителям, и сайт сам переключается на твой ноут.
@@ -13,7 +13,7 @@
    Переменные окружения:
      PORT          — порт шлюза (3001)
      AI_PUBLISH    — 0, чтобы не коммитить адрес в git
-     AI_TUNNEL     — 0, чтобы не поднимать туннель (только шлюз)
+     AI_TUNNEL     — local (по умолчанию), cloudflare или 0 (только шлюз)
 */
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -25,7 +25,8 @@ const ROOT = resolve(__dirname, '..');
 const PORT = Number(process.env.PORT) || 3001;
 const LOCAL = 'http://127.0.0.1:' + PORT;
 const PUBLISH = process.env.AI_PUBLISH !== '0';
-const WANT_TUNNEL = process.env.AI_TUNNEL !== '0';
+const TUNNEL_MODE = (process.env.AI_TUNNEL || 'local').toLowerCase() === 'cloudflare' ? 'cloudflare' : 'local';
+const WANT_TUNNEL = !['0', 'off', 'none'].includes((process.env.AI_TUNNEL || 'local').toLowerCase());
 const ENDPOINT_FILE = join(ROOT, 'ai-endpoint.json');
 
 const C = {
@@ -56,6 +57,7 @@ async function health(url, timeoutMs = 4000) {
   try {
     const res = await fetch(url.replace(/\/$/, '') + '/api/ai/health', {
       cache: 'no-store',
+      headers: { 'bypass-tunnel-reminder': '1' },
       signal: AbortSignal.timeout(timeoutMs)
     });
     if (!res.ok) return null;
@@ -114,7 +116,7 @@ async function ensureCloudflared() {
   if (found) return found;
   const dir = join(__dirname, 'bin');
   const file = join(dir, process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared');
-  const arch = process.arch === 'arm64' ? 'arm64' : (process.platform === 'win32' ? 'amd64' : 'amd64');
+  const arch = process.arch === 'arm64' ? 'arm64' : 'amd64';
   const base = 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-';
   const suffix = process.platform === 'win32' ? 'windows-' + arch + '.exe'
     : (process.platform === 'darwin' ? 'darwin-' + arch : 'linux-' + arch);
@@ -130,71 +132,112 @@ async function ensureCloudflared() {
   return file;
 }
 
-function parseUrl(chunk) {
-  const text = chunk.toString();
-  const m = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i.exec(text);
-  return m ? m[0] : '';
-}
-
-async function startTunnel() {
-  const bin = await ensureCloudflared();
-  if (!bin) throw new Error('не найден cloudflared. Положи cloudflared.exe в server/bin/ или установи из cloudflare.com');
-
-  line(C.dim + '  Открываю туннель Cloudflare → ' + LOCAL + C.reset);
-  tunnelProc = spawn(bin, ['tunnel', '--url', LOCAL, '--no-autoupdate', '--protocol', 'http2'], {
-    cwd: ROOT,
-    env: process.env,
-    stdio: ['ignore', 'pipe', 'pipe']
-  });
-
-  const url = await new Promise((resolveUrl, reject) => {
-    const timer = setTimeout(() => reject(new Error('туннель не выдал адрес за 40 секунд')), 40000);
-    const onData = chunk => {
-      const found = parseUrl(chunk);
-      if (found) { clearTimeout(timer); resolveUrl(found); }
+function waitForUrl(parse, timeoutMs, hint) {
+  return new Promise((resolveUrl, reject) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (earlyExit) tunnelProc.removeListener('exit', earlyExit);
+      fn(value);
     };
+    const timer = setTimeout(() => finish(reject, new Error(hint)), timeoutMs);
+    const onData = chunk => {
+      const found = parse(chunk);
+      if (found) finish(resolveUrl, found);
+    };
+    const earlyExit = code => finish(reject, new Error('туннель закрылся (код ' + code + ')'));
     tunnelProc.stdout.on('data', onData);
     tunnelProc.stderr.on('data', onData);
-    tunnelProc.on('exit', code => {
-      if (stopping) return;
-      clearTimeout(timer);
-      reject(new Error('туннель закрылся (код ' + code + ')'));
-    });
+    tunnelProc.on('exit', earlyExit);
   });
+}
 
+async function verifyTunnel(url) {
+  line(C.dim + '  Проверяю доступность из интернета…' + C.reset);
+  for (let i = 0; i < 30; i++) {
+    const data = await health(url, 8000);
+    if (data) {
+      ok('Туннель работает · снаружи видно модель ' + (data.model || 'неизвестна'));
+      return data;
+    }
+    await sleep(2000);
+  }
+  throw new Error('адрес выдан, но снаружи шлюз не отвечает. Проверь интернет и firewall.');
+}
+
+function attachTunnelExit() {
   tunnelProc.on('exit', code => {
     if (stopping) return;
     fail('Туннель закрылся (код ' + code + '). Перезапускаю через 5 секунд…');
     scheduleTunnelRestart();
   });
-
-  publicUrl = url;
-  ok('Публичный адрес: ' + C.bold + url + C.reset);
-
-  line(C.dim + '  Проверяю доступность из интернета…' + C.reset);
-  for (let i = 0; i < 20; i++) {
-    const data = await health(url, 5000);
-    if (data) {
-      ok('Туннель работает · снаружи видно модель ' + (data.model || 'неизвестна'));
-      return data;
-    }
-    await sleep(1500);
-  }
-  throw new Error('адрес выдан, но снаружи шлюз не отвечает. Проверь интернет и firewall.');
 }
 
-function scheduleTunnelRestart() {
+async function startCloudflareTunnel() {
+  const bin = await ensureCloudflared();
+  if (!bin) throw new Error('не найден cloudflared. Положи cloudflared.exe в server/bin/');
+
+  line(C.dim + '  Открываю туннель Cloudflare → ' + LOCAL + C.reset);
+  tunnelProc = spawn(bin, ['tunnel', '--url', LOCAL, '--no-autoupdate', '--protocol', 'http2', '--edge-ip-version', '4'], {
+    cwd: ROOT,
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  const url = await waitForUrl(
+    chunk => {
+      const m = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i.exec(chunk.toString());
+      return m ? m[0] : '';
+    },
+    60000,
+    'Cloudflare не выдал адрес за 60 секунд'
+  );
+  publicUrl = url;
+  ok('Публичный адрес: ' + C.bold + url + C.reset);
+  attachTunnelExit();
+  return verifyTunnel(url);
+}
+
+async function startLocalTunnel() {
+  line(C.dim + '  Открываю туннель localtunnel → ' + LOCAL + C.reset);
+  line(C.dim + '  Первый запуск: npx скачает localtunnel (один раз)…' + C.reset);
+  tunnelProc = spawn('npx', ['--yes', 'localtunnel', '--port', String(PORT)], {
+    cwd: ROOT,
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    shell: process.platform === 'win32'
+  });
+  const url = await waitForUrl(
+    chunk => {
+      const m = /https:\/\/[a-z0-9-]+\.loca\.lt/i.exec(chunk.toString());
+      return m ? m[0] : '';
+    },
+    120000,
+    'localtunnel не выдал адрес за 120 секунд. Проверь интернет и npx'
+  );
+  publicUrl = url;
+  ok('Публичный адрес: ' + C.bold + url + C.reset);
+  attachTunnelExit();
+  return verifyTunnel(url);
+}
+
+async function startTunnel() {
+  return TUNNEL_MODE === 'cloudflare' ? startCloudflareTunnel() : startLocalTunnel();
+}
+
+function scheduleTunnelRestart(delay) {
   if (stopping || restartTimer) return;
   restartTimer = setTimeout(async () => {
     restartTimer = null;
     try {
       const data = await startTunnel();
-      await publishPublic(data);
+      publishPublic(data);
     } catch (e) {
       fail(String(e.message || e));
-      scheduleTunnelRestart();
+      scheduleTunnelRestart(30000);
     }
-  }, 5000);
+  }, delay || 5000);
 }
 
 /* ───────── ПУБЛИКАЦИЯ АДРЕСА В GIT ───────── */
@@ -264,8 +307,11 @@ function unpublish() {
 }
 
 /* ───────── СТОП ───────── */
-function kill(child) {
-  if (!child || child.killed) return;
+function killTree(child) {
+  if (!child || child.killed || child.exitCode !== null) return;
+  if (process.platform === 'win32' && child.pid) {
+    try { spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' }); return; } catch (e) {}
+  }
   try { child.kill(); } catch (e) {}
 }
 
@@ -275,9 +321,9 @@ function shutdown(code) {
   if (restartTimer) clearTimeout(restartTimer);
   line('');
   warn('Останавливаюсь…');
-  kill(tunnelProc);
+  killTree(tunnelProc);
   unpublish();
-  kill(gatewayProc);
+  killTree(gatewayProc);
   setTimeout(() => process.exit(code || 0), 300);
 }
 
@@ -288,7 +334,13 @@ process.on('SIGTERM', () => shutdown(0));
 banner();
 try {
   await ensureGateway();
-  if (WANT_TUNNEL) {
+} catch (e) {
+  fail(String(e.message || e));
+  shutdown(1);
+}
+
+if (WANT_TUNNEL) {
+  try {
     const data = await startTunnel();
     publishPublic(data);
     line('');
@@ -296,10 +348,11 @@ try {
     line(C.dim + '  Сайт: https://bladadd.github.io/legkost/  ·  Остановить: Ctrl+C' + C.reset);
     line(C.dim + '  Ноут должен быть включён. Если выключить — сайт сам уйдёт в облако.' + C.reset);
     line('');
-  } else {
-    ok('AI_TUNNEL=0 — работает только локальный шлюз на ' + LOCAL);
+  } catch (e) {
+    fail(String(e.message || e));
+    warn('Повторяю попытку через 30 секунд…');
+    scheduleTunnelRestart(30000);
   }
-} catch (e) {
-  fail(String(e.message || e));
-  shutdown(1);
+} else {
+  ok('AI_TUNNEL=0 — работает только локальный шлюз на ' + LOCAL);
 }

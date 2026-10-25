@@ -174,6 +174,7 @@ async function healthOf(base, timeout) {
   try {
     const res = await fetch(String(base).replace(/\/$/, '') + '/api/ai/health', {
       cache: 'no-store',
+      headers: { 'bypass-tunnel-reminder': '1' },
       signal: AbortSignal.timeout(timeout || 3000)
     });
     if (!res.ok) return null;
@@ -316,7 +317,7 @@ async function chatCloud(messages) {
 async function chatGateway(base, messages, model) {
   const res = await fetch(String(base).replace(/\/$/, '') + '/api/ai/chat', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'bypass-tunnel-reminder': '1' },
     body: JSON.stringify({ messages: messages, model: model || undefined, temperature: 0.4, stream: false }),
     signal: AbortSignal.timeout(120000)
   });

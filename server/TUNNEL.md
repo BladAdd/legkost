@@ -5,7 +5,7 @@
 ## Схема
 
 ```
-посетитель → GitHub Pages → ai-endpoint.json → https://….trycloudflare.com
+посетитель → GitHub Pages → ai-endpoint.json → https://….loca.lt
                                                     ↓
                                       ноутбук: шлюз :3001 → Ollama qwen2.5:3b
 ```
@@ -31,13 +31,13 @@ node server/publish.mjs
 Скрипт:
 
 1. проверяет, запущен ли шлюз, и при необходимости поднимает `server/ai-gateway.mjs`;
-2. запускает `cloudflared tunnel --url http://127.0.0.1:3001`;
-3. ждёт адрес `https://….trycloudflare.com` и проверяет его снаружи;
+2. запускает туннель `npx localtunnel --port 3001` (пакет скачается один раз);
+3. ждёт адрес `https://….loca.lt` и проверяет его снаружи;
 4. пишет адрес в `ai-endpoint.json`, коммитит и пушит;
 5. держит туннель живым: при падении перезапускает и публикует новый адрес;
 6. по `Ctrl+C` снимает адрес с сайта и останавливает шлюз.
 
-Первый запуск сам скачивает `cloudflared` в `server/bin/` (папка в `.gitignore`).
+Localtunnel показывает браузерам страницу-заглушку «Tunnel website ahead». Сайт обходит её заголовком `bypass-tunnel-reminder`, а шлюз разрешает этот заголовок в CORS. Поэтому ИИ работает и в браузере, и в health-check.
 
 ## Переменные
 
@@ -46,40 +46,52 @@ node server/publish.mjs
 | `PORT` | `3001` | порт шлюза |
 | `AI_MODEL` | `qwen2.5:3b` | модель Ollama |
 | `AI_PUBLISH` | `1` | `0` — не коммитить адрес в git |
-| `AI_TUNNEL` | `1` | `0` — поднять только шлюз, без туннеля |
-| `CLOUDFLARED_PATH` | — | путь к своему `cloudflared` |
+| `AI_TUNNEL` | `local` | `local` — localtunnel, `cloudflare` — запасной Cloudflare, `0` — поднять только шлюз |
+| `CLOUDFLARED_PATH` | — | путь к своему `cloudflared` (только для `AI_TUNNEL=cloudflare`) |
 
 ## Важное
 
 - **Ноутбук должен быть включён.** Если он выключен, сайт показывает `🌙 Сервер выключен · отвечает облако` и отвечает через облако.
-- **Адрес меняется при перезапуске.** Бесплатный TryCloudflare выдаёт новый URL. Сайт это переживает: старый адрес не отвечает → облако, новый адрес подхватится после публикации.
+- **Адрес меняется при перезапуске.** Localtunnel выдаёт новый поддомен. Сайт это переживает: старый адрес не отвечает → облако, новый адрес подхватится после публикации.
 - **GitHub Pages кэширует ~1–10 минут.** Свежий адрес может появиться не сразу; до этого работает облако.
 - **Модель.** На GTX 1050 Ti (4 ГБ VRAM) используй `qwen2.5:3b`: 1–5 с и без «рассуждений». `qwen3:4b` отвечает 30–80 с и обрезается.
 - **Нагрузка.** Запросы к Ollama идут в очередь. Для семьи и друзей этого достаточно; для большого трафика нужен VPS или облако.
-- **Безопасность.** Шлюз открыт в интернет. При желании задай `AI_KEY` в окружении — тогда клиент должен присылать заголовок `X-AI-Key`. Для домашнего семейного сервера обычно достаточно текущей схемы.
+- **Безопасность.** Шлюз открыт в интернет. При желании задай `AI_KEY` в окружении — тогда клиент должен присылать заголовок `X-AI-Key`. Дополнительно шлюз ограничивает частоту: 1 запрос в 2 секунды и 15 в минуту с одного IP.
+
+## Почему не Cloudflare
+
+Быстрый туннель Cloudflare (`trycloudflare.com`) в Орске не регистрируется: провайдер режет служебный канал, cloudflared получает `control stream error: context deadline exceeded`, а сайт — ошибку 1033. Поэтому по умолчанию используется localtunnel. Cloudflare остался как запасной вариант:
+
+```powershell
+$env:AI_TUNNEL="cloudflare"
+node server/publish.mjs
+```
 
 ## Если что-то сломалось
 
 | Симптом | Что проверить |
 | --- | --- |
 | `шлюз не поднялся` | запущена ли Ollama: `ollama list`; есть ли модель: `ollama pull qwen2.5:3b` |
-| `туннель не выдал адрес` | интернет, firewall, доступ к `trycloudflare.com` |
-| `снаружи шлюз не отвечает` | антивирус/firewall не блокирует `cloudflared.exe`; `ALLOW_ORIGIN` содержит `https://bladadd.github.io` |
+| `localtunnel не выдал адрес` | интернет, `npx --version`, доступ к `loca.lt`; попробуй `npx --yes localtunnel --port 3001` вручную |
+| `снаружи шлюз не отвечает` | антивирус/firewall; `ALLOW_ORIGIN` содержит `https://bladadd.github.io` |
 | На сайте всё ещё облако | подожди 1–10 минут (кэш Pages) и нажми «проверить» в панели |
 | `Не удалось запушить адрес` | `git pull --rebase`, затем перезапусти `publish.mjs` |
+| Туннель часто падает | перезапусти `publish.mjs`; для стабильности — VPS или Cloudflare с аккаунтом |
 
-## Ручной туннель (если нужен постоянный адрес)
+## Постоянный адрес (необязательно)
 
-Для стабильного URL нужен аккаунт Cloudflare и свой домен:
+Localtunnel можно попросить о поддомене:
 
 ```powershell
-cloudflared tunnel login
-cloudflared tunnel create legkost-ai
-cloudflared tunnel route dns legkost-ai ai.example.com
-cloudflared tunnel run --url http://127.0.0.1:3001 legkost-ai
+npx localtunnel --port 3001 --subdomain legkost-ai
 ```
 
-Полученный `https://ai.example.com` можно вписать в `ai-endpoint.json` вручную (поле `gateway`) или указать в **Профиль → Свой шлюз**.
+Он не гарантирован: если занят, сервис выдаст другой. Для настоящего постоянного URL нужен свой домен:
+
+- Cloudflare Named Tunnel (аккаунт Cloudflare + домен) — `cloudflared tunnel create` и `cloudflared tunnel route dns`;
+- VPS с `server/ai-gateway.mjs` и reverse-proxy (Caddy/Nginx).
+
+Полученный адрес можно вписать в `ai-endpoint.json` вручную (поле `gateway`) или указать в **Профиль → Свой шлюз**.
 
 ## Альтернативы
 

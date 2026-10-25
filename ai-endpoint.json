@@ -1,7 +1,7 @@
 {
-  "gateway": "",
-  "model": "",
-  "started": "",
-  "updated": "",
+  "gateway": "https://early-clubs-warn.loca.lt",
+  "model": "qwen2.5:3b",
+  "started": "2026-10-25T10:56:11.209Z",
+  "updated": "2026-10-25T10:56:11.214Z",
   "note": "Публичный адрес домашнего сервера ИИ. Обновляется автоматически: server/publish.mjs"
 }

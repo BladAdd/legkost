@@ -1,7 +1,7 @@
 {
-  "gateway": "https://dry-hornets-strive.loca.lt",
+  "gateway": "https://d52c2515ec699f.lhr.life",
   "model": "qwen2.5:3b",
-  "started": "2026-10-25T11:10:15.640Z",
-  "updated": "2026-10-25T11:10:15.641Z",
+  "started": "2026-10-25T11:21:12.863Z",
+  "updated": "2026-10-25T11:21:12.868Z",
   "note": "Публичный адрес домашнего сервера ИИ. Обновляется автоматически: server/publish.mjs"
 }

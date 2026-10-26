@@ -1,7 +1,7 @@
 {
-  "gateway": "https://39265142e539d3.lhr.life",
+  "gateway": "https://01e4d4d8951dcd.lhr.life",
   "model": "qwen2.5:3b",
-  "started": "2026-10-26T13:01:25.226Z",
-  "updated": "2026-10-26T13:01:25.226Z",
+  "started": "2026-10-26T13:16:25.532Z",
+  "updated": "2026-10-26T13:16:25.532Z",
   "note": "Публичный адрес домашнего сервера ИИ. Обновляется автоматически: server/publish.mjs"
 }
